@@ -31,6 +31,8 @@ DEFAULT_SYSTEM_PROMPT = (
     "Никогда не пиши в тексте имена инструментов (end_conversation, lookup_user_name и т.п.) — "
     "только вызывай их. Не давай инструкций интерфейса: «нажми», «напиши продолжить», «если нужно». "
     "lookup_user_name вызывай только при явном вопросе про имя; не при 'как дела' и не для болтовни. "
+    "send_message_to_chat и end_conversation — только по явной просьбе пользователя. "
+    "На приветствие и болтовню отвечай обычным текстом, без инструментов. "
     "Перед вызовом инструмента можешь коротко сказать нейтральную фразу "
     "(«Секунду», «Сейчас посмотрю») — она озвучится сразу. "
     "Чтобы закончить голосовой диалог, вызови end_conversation, не описывая это словами."
@@ -105,10 +107,12 @@ SEND_MESSAGE_TO_CHAT_TOOL: dict[str, object] = {
     },
 }
 
-_CORE_TOOLS: list[dict[str, object]] = [
-    SEND_MESSAGE_TO_CHAT_TOOL,
-    END_CONVERSATION_TOOL,
-]
+_CORE_TOOLS: list[dict[str, object]] = []
+
+_CHAT_TOOLS_BY_NAME = {
+    "send_message_to_chat": SEND_MESSAGE_TO_CHAT_TOOL,
+    "end_conversation": END_CONVERSATION_TOOL,
+}
 
 _MEMORY_TOOLS_BY_NAME = {
     str((tool.get("function") or {}).get("name") or ""): tool
@@ -205,11 +209,9 @@ def select_assistant_tools(
     *,
     web_search_allowed: bool,
 ) -> list[dict[str, object]]:
-    """Attach a compact tool set for the turn to reduce LM context size."""
-    tools: list[dict[str, object]] = list(_CORE_TOOLS)
-    selected_names = {
-        str((tool.get("function") or {}).get("name") or "") for tool in tools
-    }
+    """Attach tools only when the utterance matches a known intent."""
+    tools: list[dict[str, object]] = []
+    selected_names: set[str] = set()
 
     def add_tool(name: str, catalog: dict[str, dict[str, object]]) -> None:
         if name in selected_names:
@@ -222,6 +224,10 @@ def select_assistant_tools(
         tools.append(tool)
         selected_names.add(name)
 
+    if requested_end_conversation(text):
+        add_tool("end_conversation", _CHAT_TOOLS_BY_NAME)
+    if requested_chat_delivery(text):
+        add_tool("send_message_to_chat", _CHAT_TOOLS_BY_NAME)
     if requested_name_lookup(text):
         add_tool("lookup_user_name", _MEMORY_TOOLS_BY_NAME)
     memory_tool = requested_user_memory_tool(text)
@@ -231,13 +237,7 @@ def select_assistant_tools(
     public = requested_public_tool(text)
     if public:
         add_tool(public, _PUBLIC_TOOLS_BY_NAME)
-        return tools
 
-    # Soft intents: keep encyclopedic/weather/joke tools, add web only when allowed.
-    for name in ("get_current_weather", "lookup_topic", "get_random_joke"):
-        add_tool(name, _PUBLIC_TOOLS_BY_NAME)
-    if web_search_allowed:
-        add_tool("search_web", _PUBLIC_TOOLS_BY_NAME)
     return tools
 
 

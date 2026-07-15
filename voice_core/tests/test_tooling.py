@@ -39,7 +39,8 @@ class ToolingTests(unittest.TestCase):
             str((tool.get("function") or {}).get("name") or "") for tool in tools
         }
         self.assertIn("get_current_weather", names)
-        self.assertIn("end_conversation", names)
+        self.assertNotIn("end_conversation", names)
+        self.assertNotIn("send_message_to_chat", names)
         self.assertNotIn("search_web", names)
         self.assertNotIn("get_random_joke", names)
         self.assertNotIn("lookup_user_name", names)
@@ -49,8 +50,25 @@ class ToolingTests(unittest.TestCase):
         names = {
             str((tool.get("function") or {}).get("name") or "") for tool in tools
         }
+        self.assertEqual(names, set())
         self.assertNotIn("lookup_user_name", names)
-        self.assertNotIn("remember_preferred_name", names)
+        self.assertNotIn("send_message_to_chat", names)
+        self.assertNotIn("end_conversation", names)
+
+    def test_select_tools_includes_chat_and_stop_only_when_requested(self) -> None:
+        chat = select_assistant_tools(
+            "Омни, отправь ответ в чат",
+            web_search_allowed=False,
+        )
+        stop = select_assistant_tools("давай на этом закончим", web_search_allowed=False)
+        chat_names = {
+            str((tool.get("function") or {}).get("name") or "") for tool in chat
+        }
+        stop_names = {
+            str((tool.get("function") or {}).get("name") or "") for tool in stop
+        }
+        self.assertEqual(chat_names, {"send_message_to_chat"})
+        self.assertEqual(stop_names, {"end_conversation"})
 
     def test_select_tools_includes_name_lookup_only_for_name_questions(self) -> None:
         tools = select_assistant_tools("как меня зовут", web_search_allowed=False)
