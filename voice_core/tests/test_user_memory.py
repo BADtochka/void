@@ -4,6 +4,8 @@ from pathlib import Path
 
 from voice_core.user_memory import (
     UserMemoryStore,
+    name_lookup_is_about_current_user,
+    name_lookup_other_subject,
     requested_name_lookup,
     requested_preferred_name,
     requested_preferred_name_forget,
@@ -19,6 +21,9 @@ class UserMemoryStoreTests(unittest.TestCase):
         self.assertTrue(requested_name_lookup("Какое имя у этого человека?"))
         self.assertFalse(requested_name_lookup("Как тебя зовут?"))
         self.assertFalse(requested_name_lookup("Назови случайное имя"))
+        self.assertFalse(requested_name_lookup("Как твои дела?"))
+        self.assertFalse(requested_name_lookup("Омни, как дела?"))
+        self.assertFalse(requested_name_lookup("Как ты?"))
 
     def test_preferred_name_requires_explicit_request(self) -> None:
         self.assertEqual(requested_preferred_name("называй меня Пупсик"), "Пупсик")
@@ -125,6 +130,25 @@ class UserMemoryStoreTests(unittest.TestCase):
             self.assertIsNotNone(match)
             self.assertEqual(match.user_id, "other")
             self.assertEqual(match.preferred_name, "Кэп")
+
+    def test_name_lookup_subject_helpers_resolve_current_and_other(self) -> None:
+        self.assertTrue(name_lookup_is_about_current_user("Омни, как меня зовут"))
+        self.assertFalse(name_lookup_is_about_current_user("Как зовут формали бэда"))
+        self.assertEqual(
+            name_lookup_other_subject("Как зовут формали бэда?"),
+            "формали бэда",
+        )
+        self.assertIsNone(name_lookup_other_subject("как меня зовут"))
+
+    def test_fuzzy_name_lookup_rejects_weak_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = UserMemoryStore(str(Path(directory) / "memory.sqlite3"))
+            store.prepare()
+            store.set("guild", "user-1", "preferred_name", "Пупсик")
+            store.set("guild", "user-2", "preferred_name", "Александр")
+
+            self.assertIsNone(store.find_best_name("guild", "дела"))
+            self.assertIsNone(store.find_best_name("guild", "xyz"))
 
     def test_fuzzy_name_lookup_is_isolated_by_guild(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

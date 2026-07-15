@@ -441,7 +441,8 @@ class LanguageModel:
                     payload["tool_choice"] = "required"
                 else:
                     payload["tools"] = tools
-            payload["reasoning_effort"] = "none"
+            if self._settings.lmstudio_reasoning_effort:
+                payload["reasoning_effort"] = self._settings.lmstudio_reasoning_effort
 
             message, finish_reason = await self._stream_completion(payload, request_number)
             content = _message_content(message)

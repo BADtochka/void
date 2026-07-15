@@ -23,11 +23,14 @@ DEFAULT_SYSTEM_PROMPT = (
     "Не выводи think, reasoning, analysis и внутренние рассуждения. "
     "Ответ озвучивается синтезатором — пиши только то, что можно произнести вслух. "
     "В запросе есть roster участников и current_identity: разные identity_key — разные люди. "
-    "Отвечай только current_identity; местоимения «я/меня/мне» в реплике относятся только к нему. "
-    "Обращайся по preferred_name или display_name; никогда не произноси identity_key. "
+    "Отвечай только current_identity. current_name — уже известное имя текущего говорящего: "
+    "используй его для обращения, не ищи другое имя в базе. "
+    "Местоимения «я/меня/мне» в реплике относятся только к current_identity. "
+    "Никогда не произноси identity_key. "
     "Нужные факты и действия выполняй через инструменты, не выдумывай свежие данные. "
     "Никогда не пиши в тексте имена инструментов (end_conversation, lookup_user_name и т.п.) — "
     "только вызывай их. Не давай инструкций интерфейса: «нажми», «напиши продолжить», «если нужно». "
+    "lookup_user_name вызывай только при явном вопросе про имя; не при 'как дела' и не для болтовни. "
     "Перед вызовом инструмента можешь коротко сказать нейтральную фразу "
     "(«Секунду», «Сейчас посмотрю») — она озвучится сразу. "
     "Чтобы закончить голосовой диалог, вызови end_conversation, не описывая это словами."
@@ -103,10 +106,14 @@ SEND_MESSAGE_TO_CHAT_TOOL: dict[str, object] = {
 }
 
 _CORE_TOOLS: list[dict[str, object]] = [
-    *USER_MEMORY_TOOLS,
     SEND_MESSAGE_TO_CHAT_TOOL,
     END_CONVERSATION_TOOL,
 ]
+
+_MEMORY_TOOLS_BY_NAME = {
+    str((tool.get("function") or {}).get("name") or ""): tool
+    for tool in USER_MEMORY_TOOLS
+}
 
 _PUBLIC_TOOLS_BY_NAME = {
     str((tool.get("function") or {}).get("name") or ""): tool
@@ -204,27 +211,33 @@ def select_assistant_tools(
         str((tool.get("function") or {}).get("name") or "") for tool in tools
     }
 
-    def add_tool(name: str) -> None:
+    def add_tool(name: str, catalog: dict[str, dict[str, object]]) -> None:
         if name in selected_names:
             return
         if name == "search_web" and not web_search_allowed:
             return
-        tool = _PUBLIC_TOOLS_BY_NAME.get(name)
+        tool = catalog.get(name)
         if tool is None:
             return
         tools.append(tool)
         selected_names.add(name)
 
+    if requested_name_lookup(text):
+        add_tool("lookup_user_name", _MEMORY_TOOLS_BY_NAME)
+    memory_tool = requested_user_memory_tool(text)
+    if memory_tool:
+        add_tool(memory_tool, _MEMORY_TOOLS_BY_NAME)
+
     public = requested_public_tool(text)
     if public:
-        add_tool(public)
+        add_tool(public, _PUBLIC_TOOLS_BY_NAME)
         return tools
 
     # Soft intents: keep encyclopedic/weather/joke tools, add web only when allowed.
     for name in ("get_current_weather", "lookup_topic", "get_random_joke"):
-        add_tool(name)
+        add_tool(name, _PUBLIC_TOOLS_BY_NAME)
     if web_search_allowed:
-        add_tool("search_web")
+        add_tool("search_web", _PUBLIC_TOOLS_BY_NAME)
     return tools
 
 
@@ -257,7 +270,8 @@ def build_turn_prompt(
         f"participants={json.dumps(roster, ensure_ascii=False)}\n"
         f"current_identity={identity_key}\n"
         f"current_name={json.dumps(speaker_name, ensure_ascii=False)}\n"
-        "Отвечай только current_identity. Его «я/меня/мне» не переноси на других.\n"
+        "Отвечай только current_identity. Его «я/меня/мне» не переноси на других. "
+        "current_name уже известно — обращайся так; не подменяй чужим именем из roster.\n"
         f"web_search={'allowed' if web_search_allowed else 'denied'}\n"
         f"[Реплика]\n{accepted_text}"
     )

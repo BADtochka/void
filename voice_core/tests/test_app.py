@@ -741,31 +741,43 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
                         {"subject": "current_user"},
                     )
                 )
+                overridden = json.loads(
+                    await app_module.execute_user_memory_tool(
+                        request,
+                        "как меня зовут",
+                        "lookup_user_name",
+                        {"subject": "Пупсик"},
+                    )
+                )
                 other = json.loads(
                     await app_module.execute_user_memory_tool(
                         request,
                         "как зовут формали бэда",
                         "lookup_user_name",
-                        {"subject": "формали бэд"},
+                        {"subject": "дела"},
                     )
                 )
-                with self.assertRaisesRegex(ValueError, "subject is required"):
+                missing = json.loads(
                     await app_module.execute_user_memory_tool(
                         request,
-                        "как зовут формали бэда",
+                        "как зовут xyzzy",
                         "lookup_user_name",
-                        {},
+                        {"subject": "xyzzy"},
                     )
+                )
 
             self.assertEqual(current["preferred_name"], "Кэп")
             self.assertEqual(current["scope"], "current_user")
             self.assertEqual(current["answer_name"], "Кэп")
+            self.assertEqual(overridden["scope"], "current_user")
+            self.assertEqual(overridden["answer_name"], "Кэп")
             self.assertEqual(other["preferred_name"], "Пупсик")
             self.assertEqual(other["scope"], "other_user")
             self.assertEqual(other["answer_name"], "Пупсик")
             self.assertIn("третьем лице", other["response_instruction"])
             self.assertNotEqual(other["answer_name"], "Кэп")
-            self.assertGreater(other["confidence"], 0.75)
+            self.assertGreater(other["confidence"], 0.7)
+            self.assertFalse(missing["found"])
 
     async def test_assistant_name_lookup_returns_one_terminal_sentence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -16,7 +16,7 @@ class ToolingTests(unittest.TestCase):
         self.assertIn("current_identity", DEFAULT_SYSTEM_PROMPT)
         self.assertIn("не пиши в тексте имена инструментов", DEFAULT_SYSTEM_PROMPT.casefold())
         self.assertNotIn("get_current_weather", DEFAULT_SYSTEM_PROMPT)
-        self.assertLess(len(DEFAULT_SYSTEM_PROMPT), 1_400)
+        self.assertLess(len(DEFAULT_SYSTEM_PROMPT), 1_600)
 
     def test_end_conversation_detection_covers_free_form(self) -> None:
         self.assertTrue(requested_end_conversation("давай на этом закончим"))
@@ -42,6 +42,22 @@ class ToolingTests(unittest.TestCase):
         self.assertIn("end_conversation", names)
         self.assertNotIn("search_web", names)
         self.assertNotIn("get_random_joke", names)
+        self.assertNotIn("lookup_user_name", names)
+
+    def test_select_tools_omits_name_lookup_for_smalltalk(self) -> None:
+        tools = select_assistant_tools("Как твои дела?", web_search_allowed=False)
+        names = {
+            str((tool.get("function") or {}).get("name") or "") for tool in tools
+        }
+        self.assertNotIn("lookup_user_name", names)
+        self.assertNotIn("remember_preferred_name", names)
+
+    def test_select_tools_includes_name_lookup_only_for_name_questions(self) -> None:
+        tools = select_assistant_tools("как меня зовут", web_search_allowed=False)
+        names = {
+            str((tool.get("function") or {}).get("name") or "") for tool in tools
+        }
+        self.assertIn("lookup_user_name", names)
 
     def test_tool_status_speech_is_neutral(self) -> None:
         self.assertEqual(tool_status_speech("search_web"), "Ищу в сети.")

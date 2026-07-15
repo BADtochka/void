@@ -54,6 +54,15 @@ def _casefold_csv(name: str, default: str = "") -> tuple[str, ...]:
     )
 
 
+def _optional_env_string(name: str, default: str | None = None) -> str | None:
+    """Return stripped env value; empty string means unset/omit."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = raw.strip()
+    return value or None
+
+
 @dataclass(frozen=True)
 class Settings:
     lmstudio_base_url: str = os.getenv("LMSTUDIO_BASE_URL", "http://127.0.0.1:1234/v1").rstrip("/")
@@ -63,6 +72,10 @@ class Settings:
     lmstudio_timeout_seconds: float = _positive_float("LMSTUDIO_TIMEOUT_SECONDS", 180.0)
     lmstudio_progress_interval_seconds: float = _positive_float(
         "LMSTUDIO_PROGRESS_INTERVAL_SECONDS", 2.0
+    )
+    # Sent only when set. Use "none" for reasoning models; leave empty for Llama/Qwen-Instruct.
+    lmstudio_reasoning_effort: str | None = _optional_env_string(
+        "LMSTUDIO_REASONING_EFFORT"
     )
     whisper_model: str = os.getenv("WHISPER_MODEL", "small")
     whisper_device: str = os.getenv("WHISPER_DEVICE", "cpu")

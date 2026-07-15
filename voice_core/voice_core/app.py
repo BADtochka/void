@@ -42,6 +42,8 @@ from .turn_queue import (  # noqa: E402
 from .user_memory import (  # noqa: E402
     USER_MEMORY_TOOLS,
     UserMemoryStore,
+    name_lookup_is_about_current_user,
+    name_lookup_other_subject,
     requested_preferred_name,
     requested_preferred_name_forget,
 )
@@ -133,6 +135,12 @@ async def execute_user_memory_tool(
     if tool_name == "lookup_user_name":
         raw_subject = _arguments.get("subject", _arguments.get("query"))
         subject = str(raw_subject).strip() if raw_subject is not None else ""
+        if name_lookup_is_about_current_user(transcript):
+            subject = "current_user"
+        else:
+            overheard = name_lookup_other_subject(transcript)
+            if overheard:
+                subject = overheard
         if subject.casefold() in {
             "current_user",
             "я",

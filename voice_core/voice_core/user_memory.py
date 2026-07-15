@@ -56,14 +56,64 @@ def requested_user_memory_tool(text: str) -> str | None:
 
 def requested_name_lookup(text: str) -> bool:
     normalized = re.sub(r"[^\w]+", " ", text.casefold()).strip()
+    if re.search(r"\bкак\s+(?:твои|твоё|твое|дела|жизнь|настроение)\b", normalized):
+        return False
+    if re.search(r"\bкак\s+ты\b", normalized) and not re.search(
+        r"\bкак\s+ты\s+меня\s+(?:зовёшь|зовешь|называешь)\b", normalized
+    ):
+        return False
     return bool(
         re.search(r"\bкак\s+меня\s+зовут\b", normalized)
-        or re.search(r"\bкак\s+зовут\b", normalized)
+        or re.search(r"\bкак\s+ты\s+меня\s+(?:зовёшь|зовешь|называешь)\b", normalized)
+        or re.search(r"\bкак\s+меня\s+(?:называть|звать)\b", normalized)
+        or re.search(r"\bкак\s+зовут\s+\S", normalized)
         or re.search(r"\bкак\s+(?:его|её|ее|их)\s+зовут\b", normalized)
+        or re.search(r"\bкакое\s+(?:у\s+меня\s+)?имя\b", normalized)
         or re.search(r"\bкакое\s+имя\s+у\b", normalized)
         or re.search(r"\bчь[её]\s+имя\b", normalized)
         or re.search(r"\bимя\s+у\b", normalized)
     )
+
+
+def name_lookup_is_about_current_user(text: str) -> bool:
+    normalized = re.sub(r"[^\w]+", " ", text.casefold()).strip()
+    return bool(
+        re.search(r"\bкак\s+меня\s+зовут\b", normalized)
+        or re.search(r"\bкак\s+ты\s+меня\s+(?:зовёшь|зовешь|называешь)\b", normalized)
+        or re.search(r"\bкак\s+меня\s+(?:называть|звать)\b", normalized)
+        or re.search(r"\bкакое\s+у\s+меня\s+имя\b", normalized)
+        or re.search(r"\bмо[её]\s+имя\b", normalized)
+    )
+
+
+def name_lookup_other_subject(text: str) -> str | None:
+    """Extract the queried person from 'как зовут X' when not about the speaker."""
+    if name_lookup_is_about_current_user(text) or not requested_name_lookup(text):
+        return None
+    normalized = re.sub(r"[^\w]+", " ", text, flags=re.UNICODE).strip()
+    match = re.search(
+        r"(?i)\bкак\s+(?:его|её|ее|их)\s+зовут\b",
+        normalized,
+    )
+    if match:
+        return None
+    match = re.search(
+        r"(?i)\bкак\s+зовут\s+(.+?)(?:\s+пожалуйста)?$",
+        normalized,
+    )
+    if match:
+        subject = match.group(1).strip(" \t\r\n\"'.,!?;:")
+        if subject and subject.casefold() not in {"меня", "тебя", "нас"}:
+            return subject
+    match = re.search(
+        r"(?i)\b(?:какое\s+имя\s+у|имя\s+у)\s+(.+?)(?:\s+пожалуйста)?$",
+        normalized,
+    )
+    if match:
+        subject = match.group(1).strip(" \t\r\n\"'.,!?;:")
+        if subject:
+            return subject
+    return None
 
 
 _CYRILLIC_TO_LATIN = str.maketrans(
@@ -96,6 +146,9 @@ def _name_similarity(query: str, candidate: str) -> float:
         for query_form in query_forms
         for candidate_form in candidate_forms
     )
+
+
+_NAME_MATCH_MIN_CONFIDENCE = 0.55
 
 
 @dataclass(frozen=True)
@@ -240,6 +293,8 @@ class UserMemoryStore:
                         str(candidate),
                         confidence,
                     )
+        if best is None or best.confidence < _NAME_MATCH_MIN_CONFIDENCE:
+            return None
         return best
 
     @contextmanager
@@ -296,13 +351,10 @@ USER_MEMORY_TOOLS: list[dict[str, object]] = [
         "function": {
             "name": "lookup_user_name",
             "description": (
-                "Обязательно вызови этот инструмент при вопросе, как зовут текущего или другого "
-                "участника. Всегда передавай subject: значение current_user только для вопросов "
-                "'как меня зовут', а для другого человека — услышанное имя или ник, даже с ошибкой "
-                "распознавания. Никогда не подставляй current_user, если спрашивают о другом "
-                "участнике. Backend сам найдёт максимально похожую запись в базе. В ответе строго "
-                "учитывай scope и response_instruction: при other_user говори о найденном человеке "
-                "в третьем лице и не отвечай 'тебя зовут'. Не угадывай имя по истории."
+                "Только для явного вопроса, как зовут человека. "
+                "Не вызывай при приветствии, 'как дела', болтовне или если имя уже в current_name. "
+                "subject=current_user лишь для 'как меня зовут'; иначе — имя/ник из вопроса. "
+                "Не угадывай имя и не подставляй случайного участника из roster."
             ),
             "parameters": {
                 "type": "object",
