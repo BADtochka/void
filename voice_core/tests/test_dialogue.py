@@ -25,9 +25,9 @@ class ConversationStoreTests(unittest.TestCase):
         history = store.history("guild")
         self.assertIn("author_identity=speaker_2", history[0]["content"])
         self.assertIn('author_name="Рыжий"', history[0]["content"])
-        self.assertIn("utterance=Я люблю чай", history[0]["content"])
+        self.assertIn("Я люблю чай", history[0]["content"])
         self.assertIn("reply_to_identity=speaker_2", history[1]["content"])
-        self.assertIn("answer=Запомнил.", history[1]["content"])
+        self.assertIn("Запомнил.", history[1]["content"])
         self.assertEqual(store.last_assistant_message("guild"), "Запомнил.")
 
     def test_history_ownership_metadata_is_not_spoken(self) -> None:
@@ -305,6 +305,15 @@ class ConversationStoreTests(unittest.TestCase):
         self.assertTrue(
             store.stop_if_requested("guild", "О, мне, ну пожалуйста, хватит")
         )
+
+    def test_free_form_stop_phrase_is_recognized_locally(self) -> None:
+        store = ConversationStore(
+            "омни",
+            followup_seconds=30,
+            max_turns=2,
+            stop_phrases=("хватит", "на этом закончим"),
+        )
+        self.assertTrue(store.stop_if_requested("guild", "давай на этом закончим"))
 
     def test_markdown_is_removed_before_speech(self) -> None:
         self.assertEqual(prepare_for_speech("**Ответ:** [ссылка](https://example.com)"), "Ответ: ссылка")

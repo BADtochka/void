@@ -269,16 +269,12 @@ class ConversationStore:
         if identity_key:
             encoded_name = json.dumps(speaker_name or "", ensure_ascii=False)
             user_text = (
-                "[Служебная принадлежность исторической реплики]\n"
-                f"author_identity={identity_key}\n"
-                f"author_name={encoded_name}\n"
-                f"utterance={user_text}"
+                f"author_identity={identity_key}; author_name={encoded_name}\n"
+                f"{user_text}"
             )
             assistant_text = (
-                "[Служебная принадлежность исторического ответа]\n"
-                f"reply_to_identity={identity_key}\n"
-                f"reply_to_name={encoded_name}\n"
-                f"answer={assistant_text}"
+                f"reply_to_identity={identity_key}; reply_to_name={encoded_name}\n"
+                f"{assistant_text}"
             )
         messages.extend(
             [
@@ -295,6 +291,10 @@ class ConversationStore:
         for message in reversed(conversation.messages):
             if message["role"] == "assistant":
                 content = message["content"]
+                if content.startswith("reply_to_identity="):
+                    _, separator, answer = content.partition("\n")
+                    if separator:
+                        return answer
                 if content.startswith("[Служебная принадлежность исторического ответа]"):
                     _, separator, answer = content.partition("\nanswer=")
                     if separator:

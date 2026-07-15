@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -19,12 +20,19 @@ from .dialogue import ConversationStore, prepare_for_speech  # noqa: E402
 from .event_bus import FollowupTracker, VoiceEvent, VoiceEventBus  # noqa: E402
 from .public_info import (  # noqa: E402
     PUBLIC_INFO_TOOLS,
-    WEB_SEARCH_TOOL,
     PublicInformationService,
-    requested_public_tool,
     requested_web_search,
 )
 from .services import HotwordDetector, LanguageModel, SpeechToText, TextToSpeech, ToolResult  # noqa: E402
+from .tooling import (  # noqa: E402
+    END_CONVERSATION_FAREWELL,
+    END_CONVERSATION_TOOL,
+    SEND_MESSAGE_TO_CHAT_TOOL,
+    build_turn_prompt,
+    requested_chat_delivery,
+    required_tool_for_turn,
+    select_assistant_tools,
+)
 from .turn_queue import (  # noqa: E402
     GenerationQueue,
     PreparedTurn,
@@ -34,10 +42,8 @@ from .turn_queue import (  # noqa: E402
 from .user_memory import (  # noqa: E402
     USER_MEMORY_TOOLS,
     UserMemoryStore,
-    requested_name_lookup,
     requested_preferred_name,
     requested_preferred_name_forget,
-    requested_user_memory_tool,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -80,86 +86,12 @@ class WebSearchAccessGrant(BaseModel):
     displayName: str = Field(min_length=1, max_length=100)
 
 
-END_CONVERSATION_TOOL: dict[str, object] = {
-    "type": "function",
-    "function": {
-        "name": "end_conversation",
-        "description": (
-            "Немедленно заверши текущий голосовой диалог и перестань слушать follow-up. "
-            "Вызывай, когда пользователь просит закончить, замолчать, отключиться, "
-            "перестать слушать или иным явным способом завершает разговор. "
-            "Не требуй от пользователя произнести специальное слово 'закончить': любая "
-            "эквивалентная просьба достаточна. Настроенные варианты и ошибки Whisper: "
-            + ", ".join(settings.stop_phrases)
-            + ". "
-            "Не вызывай для остановки музыки, программы, задачи или другого объекта."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {},
-            "additionalProperties": False,
-        },
-    },
-}
-SEND_MESSAGE_TO_CHAT_TOOL: dict[str, object] = {
-    "type": "function",
-    "function": {
-        "name": "send_message_to_chat",
-        "description": (
-            "Обязательно вызови, когда пользователь просит отправить или продублировать текст "
-            "в Discord-чат. scope=full_response отправляет весь текущий ответ после его генерации; "
-            "scope=selection отправляет только явно запрошенную часть, которую нужно полностью "
-            "передать в content; scope=previous_response отправляет последний предыдущий ответ "
-            "ассистента из истории. Не используй previous_response для текущего ответа."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "scope": {
-                    "type": "string",
-                    "enum": ["full_response", "selection", "previous_response"],
-                    "description": "Какой текст отправить в Discord-чат.",
-                },
-                "content": {
-                    "type": "string",
-                    "description": (
-                        "Полный текст выбранной части только для scope=selection. "
-                        "Не заполняй для full_response и previous_response."
-                    ),
-                },
-            },
-            "required": ["scope"],
-            "additionalProperties": False,
-        },
-    },
-}
 ASSISTANT_TOOLS = [
     *USER_MEMORY_TOOLS,
     *PUBLIC_INFO_TOOLS,
     SEND_MESSAGE_TO_CHAT_TOOL,
     END_CONVERSATION_TOOL,
 ]
-
-
-def requested_chat_delivery(text: str) -> bool:
-    normalized = " ".join(text.casefold().split())
-    action_requested = any(
-        marker in normalized
-        for marker in (
-            "отправь",
-            "отправить",
-            "скинь",
-            "скинуть",
-            "продублируй",
-            "продублировать",
-            "дублируй",
-            "напиши",
-        )
-    )
-    destination_requested = any(
-        marker in normalized for marker in ("в чат", "в текстовый чат", "текстом")
-    )
-    return action_requested and destination_requested
 
 
 async def execute_user_memory_tool(
@@ -289,6 +221,7 @@ async def stop_conversation(
     *,
     source: str,
     interrupt_active_generation: bool,
+    farewell: str | None = None,
 ) -> tuple[int, int]:
     store.stop(request.guild_id)
     cancelled_recognition = await recognition_queue.cancel_guild(request.guild_id)
@@ -300,22 +233,40 @@ async def stop_conversation(
             request.guild_id
         )
     followups.stop_guild(request.guild_id)
+    spoken_farewell = prepare_for_speech(farewell or "", limit=120) if farewell else ""
+    farewell_audio: str | None = None
+    if spoken_farewell:
+        try:
+            speech, sample_rate = await tts.synthesize(spoken_farewell, request.guild_id)
+            farewell_audio = base64.b64encode(
+                float_mono_to_discord_pcm(speech, sample_rate)
+            ).decode("ascii")
+        except Exception:
+            logger.exception(
+                "Farewell speech synthesis failed guild_id=%s text=%r",
+                request.guild_id,
+                spoken_farewell,
+            )
+            spoken_farewell = ""
     event_bus.publish(
         VoiceEvent(
             "followup_stopped",
             request.guild_id,
             request.channel_id,
             request.user_id,
+            content=spoken_farewell or None,
+            audioBase64=farewell_audio,
         )
     )
     logger.info(
-        "Conversation stopped source=%s guild_id=%s user_id=%s display_name=%s cancelled_recognition=%s cancelled_generation=%s",
+        "Conversation stopped source=%s guild_id=%s user_id=%s display_name=%s cancelled_recognition=%s cancelled_generation=%s farewell=%r",
         source,
         request.guild_id,
         request.user_id,
         request.display_name,
         cancelled_recognition,
         cancelled_generation,
+        spoken_farewell or None,
     )
     return cancelled_recognition, cancelled_generation
 
@@ -328,10 +279,17 @@ async def execute_assistant_tool(
     chat_deliveries: list[str | None] | None = None,
 ) -> str | ToolResult:
     if tool_name == "end_conversation":
+        raw_farewell = arguments.get("farewell")
+        farewell = (
+            prepare_for_speech(str(raw_farewell), limit=120)
+            if raw_farewell is not None and str(raw_farewell).strip()
+            else END_CONVERSATION_FAREWELL
+        )
         cancelled_recognition, cancelled_generation = await stop_conversation(
             request,
             source="llm_tool",
             interrupt_active_generation=False,
+            farewell=farewell,
         )
         return ToolResult(
             json.dumps(
@@ -340,6 +298,7 @@ async def execute_assistant_tool(
                     "conversation_ended": True,
                     "cancelled_recognition": cancelled_recognition,
                     "cancelled_generation": cancelled_generation,
+                    "farewell": farewell,
                 },
                 ensure_ascii=False,
             ),
@@ -473,6 +432,42 @@ async def recognize_turn(request: TurnRequest) -> PreparedTurn | None:
     )
 
 
+async def publish_status_speech(
+    request: TurnRequest,
+    text: str,
+) -> None:
+    spoken = prepare_for_speech(text, limit=180)
+    if not spoken:
+        return
+    try:
+        speech, sample_rate = await tts.synthesize(spoken, request.guild_id)
+    except Exception:
+        logger.exception(
+            "Status speech synthesis failed guild_id=%s text=%r",
+            request.guild_id,
+            spoken,
+        )
+        return
+    pcm = float_mono_to_discord_pcm(speech, sample_rate)
+    event_bus.publish(
+        VoiceEvent(
+            "status_speech",
+            request.guild_id,
+            request.channel_id,
+            request.user_id,
+            content=spoken,
+            audioBase64=base64.b64encode(pcm).decode("ascii"),
+        )
+    )
+    logger.info(
+        "Status speech queued guild_id=%s user_id=%s text=%r bytes=%s",
+        request.guild_id,
+        request.user_id,
+        spoken,
+        len(pcm),
+    )
+
+
 async def generate_turn(turn: PreparedTurn) -> bytes | None:
     request = turn.request
     accepted = turn.accepted_text
@@ -509,25 +504,17 @@ async def generate_turn(turn: PreparedTurn) -> bytes | None:
         }
         for item in store.participants(request.guild_id)
     ]
-    prompt = (
-        "[Служебный контекст участников. Не цитируй и не произноси identity_key.]\n"
-        f"participants={json.dumps(roster, ensure_ascii=False)}\n"
-        f"current_identity={participant.identity_key}\n"
-        f"current_name={json.dumps(speaker_name, ensure_ascii=False)}\n"
-        "Отвечай только на следующую реплику current_identity. Местоимения «я», «меня», "
-        "«мне» и «мой» в ней относятся только к current_identity. Не переноси вопросы, "
-        "слова и факты других identity на текущего говорящего.\n"
-        f"[Реплика текущего говорящего]\n{accepted}"
-    )
-    chat_deliveries: list[str | None] = []
     web_search_allowed = request.user_is_admin or user_memory.has_web_search_access(
         request.guild_id, request.user_id
     )
-    prompt = (
-        f"{prompt}\n[Доступ к поиску в сети: "
-        f"{'разрешён' if web_search_allowed else 'запрещён'}]"
+    prompt = build_turn_prompt(
+        roster=roster,
+        identity_key=participant.identity_key,
+        speaker_name=speaker_name,
+        accepted_text=accepted,
+        web_search_allowed=web_search_allowed,
     )
-    requested_public = requested_public_tool(accepted)
+    chat_deliveries: list[str | None] = []
     if requested_web_search(accepted) and not web_search_allowed:
         answer = (
             "Поиск в сети доступен только администраторам сервера и пользователям "
@@ -539,10 +526,8 @@ async def generate_turn(turn: PreparedTurn) -> bytes | None:
             request.user_id,
         )
     else:
-        assistant_tools = (
-            [*ASSISTANT_TOOLS, WEB_SEARCH_TOOL]
-            if web_search_allowed
-            else ASSISTANT_TOOLS
+        assistant_tools = select_assistant_tools(
+            accepted, web_search_allowed=web_search_allowed
         )
         answer = await llm.reply(
             store.history(request.guild_id),
@@ -551,16 +536,12 @@ async def generate_turn(turn: PreparedTurn) -> bytes | None:
             lambda name, arguments: execute_assistant_tool(
                 request, accepted, name, arguments, chat_deliveries
             ),
-            required_tool_name=(
-                "lookup_user_name"
-                if requested_name_lookup(accepted)
-                else "send_message_to_chat"
-                if requested_chat_delivery(accepted)
-                else requested_user_memory_tool(accepted)
-                or requested_public
+            required_tool_name=required_tool_for_turn(
+                accepted, web_search_allowed=web_search_allowed
             ),
             image_data=request.image_data or None,
             image_content_type=request.image_content_type or None,
+            on_status_speech=lambda text: publish_status_speech(request, text),
         )
     spoken_answer = prepare_for_speech(answer)
     if not spoken_answer:

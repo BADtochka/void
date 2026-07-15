@@ -19,6 +19,7 @@ from .config import Settings
 from .audio_effects import apply_robotic_voice_effect
 from .dialogue import normalize_phrase
 from .speech_normalization import normalize_russian_tts_text
+from .tooling import tool_status_speech
 from .whisper_models import resolve_model
 from .windows_dlls import configure_windows_cuda_dlls
 
@@ -46,6 +47,7 @@ class ToolResult:
 
 
 ToolHandler = Callable[[str, dict[str, Any]], Awaitable[str | ToolResult]]
+StatusSpeechHandler = Callable[[str], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -389,6 +391,7 @@ class LanguageModel:
         required_tool_name: str | None = None,
         image_data: bytes | None = None,
         image_content_type: str | None = None,
+        on_status_speech: StatusSpeechHandler | None = None,
     ) -> str:
         user_content: str | list[dict[str, object]] = user_text
         if image_data and image_content_type:
@@ -461,18 +464,45 @@ class LanguageModel:
                 messages.append(
                     {"role": "assistant", "content": content or None, "tool_calls": tool_calls}
                 )
+                model_status = content.strip() if content else ""
+                announced_model_status = False
+                ending_only = all(
+                    str((tool_call.get("function") or {}).get("name") or "")
+                    == "end_conversation"
+                    for tool_call in tool_calls
+                )
+                if model_status and on_status_speech is not None and not ending_only:
+                    await on_status_speech(model_status)
+                    announced_model_status = True
                 for tool_call in tool_calls:
                     function = tool_call.get("function") or {}
                     tool_name = str(function.get("name") or "")
+                    if (
+                        on_status_speech is not None
+                        and not announced_model_status
+                        and tool_name
+                        and tool_name != "end_conversation"
+                    ):
+                        announcement = tool_status_speech(tool_name)
+                        if announcement:
+                            await on_status_speech(announcement)
+                            announced_model_status = True
                     try:
                         arguments = json.loads(function.get("arguments") or "{}")
                         if not isinstance(arguments, dict):
                             raise ValueError("tool arguments must be an object")
+                        if (
+                            tool_name == "end_conversation"
+                            and model_status
+                            and not str(arguments.get("farewell") or "").strip()
+                        ):
+                            arguments = {**arguments, "farewell": model_status}
                         raw_tool_result = await tool_handler(tool_name, arguments)
                     except Exception as error:
                         logger.warning("Tool %s failed: %s", tool_name, error)
                         tool_result = json.dumps({"ok": False, "error": str(error)})
                         terminate = False
+                        raw_tool_result = None
                     else:
                         if isinstance(raw_tool_result, ToolResult):
                             tool_result = raw_tool_result.content
@@ -489,7 +519,11 @@ class LanguageModel:
                     )
                     if terminate:
                         logger.info("Tool %s terminated the current completion", tool_name)
-                        return raw_tool_result.response or ""
+                        if isinstance(raw_tool_result, ToolResult) and raw_tool_result.response:
+                            return raw_tool_result.response
+                        if model_status and not ending_only:
+                            return "" if announced_model_status else model_status
+                        return ""
                 continue
 
             if content:

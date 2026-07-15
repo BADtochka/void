@@ -12,6 +12,7 @@ VoiceEventType = Literal[
     "followup_expired",
     "followup_reopened",
     "chat_message",
+    "status_speech",
 ]
 
 
@@ -24,6 +25,7 @@ class VoiceEvent:
     followupMs: int | None = None
     awaitingContent: bool | None = None
     content: str | None = None
+    audioBase64: str | None = None
 
     def as_dict(self) -> dict[str, str | int | bool | None]:
         return asdict(self)

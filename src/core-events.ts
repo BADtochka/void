@@ -2,7 +2,7 @@ import { config } from "./config.js";
 import { logError, logInfo, logWarn } from "./logger.js";
 import type { VoiceCueType } from "./audio-cues.js";
 
-type VoiceCoreEventType = VoiceCueType | "followup_reopened" | "chat_message";
+type VoiceCoreEventType = VoiceCueType | "followup_reopened" | "chat_message" | "status_speech";
 
 export type VoiceCoreEvent = {
   type: VoiceCoreEventType;
@@ -12,6 +12,7 @@ export type VoiceCoreEvent = {
   followupMs?: number | null;
   awaitingContent?: boolean | null;
   content?: string | null;
+  audioBase64?: string | null;
 };
 
 const EVENT_TYPES = new Set<VoiceCoreEventType>([
@@ -22,6 +23,7 @@ const EVENT_TYPES = new Set<VoiceCoreEventType>([
   "followup_expired",
   "followup_reopened",
   "chat_message",
+  "status_speech",
 ]);
 
 export class CoreEventClient {
@@ -84,6 +86,13 @@ export class CoreEventClient {
         if (
           event.type === "chat_message" &&
           (typeof event.content !== "string" || event.content.trim().length === 0)
+        ) {
+          logWarn("voice.events.invalid", { payload: String(message.data) });
+          return;
+        }
+        if (
+          event.type === "status_speech" &&
+          (typeof event.audioBase64 !== "string" || event.audioBase64.trim().length === 0)
         ) {
           logWarn("voice.events.invalid", { payload: String(message.data) });
           return;

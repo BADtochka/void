@@ -39,7 +39,7 @@ export class VoiceSession {
   private readonly capturingUserIds = new Set<string>();
   private readonly playbackQueue: Array<{
     pcm: Buffer;
-    kind: "cue" | "reply";
+    kind: "cue" | "status" | "reply";
     userId?: string;
   }> = [];
   private readonly activeFollowupUsers = new Set<string>();
@@ -49,7 +49,7 @@ export class VoiceSession {
   private readonly processingAbortControllers = new Map<number, AbortController>();
   private awaitingContentUserId: string | null = null;
   private awaitingContentConfirmed = false;
-  private currentPlaybackKind: "cue" | "reply" | null = null;
+  private currentPlaybackKind: "cue" | "status" | "reply" | null = null;
   private currentPlaybackUserId: string | null = null;
   private readonly pendingFollowupCountdownUsers = new Set<string>();
   private selfMuted: boolean;
@@ -199,6 +199,16 @@ export class VoiceSession {
         this.pendingFollowupCountdownUsers.clear();
         this.awaitingContentUserId = null;
         this.awaitingContentConfirmed = false;
+        if (event.audioBase64) {
+          try {
+            const pcm = Buffer.from(event.audioBase64, "base64");
+            if (pcm.length > 0) {
+              this.enqueueStatusSpeech(pcm, event.userId);
+            }
+          } catch (error) {
+            logError("voice.farewell.decode_failed", error, this.context({ userId: event.userId }));
+          }
+        }
         this.playCue("followup_stopped");
         this.updateMicrophoneState("followup_stopped");
         break;
@@ -206,6 +216,18 @@ export class VoiceSession {
         this.activeFollowupUsers.add(event.userId);
         this.updateMicrophoneState("followup_reopened");
         break;
+      case "status_speech": {
+        if (!event.audioBase64) break;
+        try {
+          const pcm = Buffer.from(event.audioBase64, "base64");
+          if (pcm.length > 0) {
+            this.enqueueStatusSpeech(pcm, event.userId);
+          }
+        } catch (error) {
+          logError("voice.status_speech.decode_failed", error, this.context({ userId: event.userId }));
+        }
+        break;
+      }
     }
   }
 
@@ -621,6 +643,16 @@ export class VoiceSession {
   private enqueueReply(replyPcm: Buffer, userId: string): void {
     this.playbackQueue.push({ pcm: replyPcm, kind: "reply", userId });
     logInfo("voice.playback.queued", this.context({ queued: this.playbackQueue.length }));
+    this.startQueuedPlayback();
+  }
+
+  private enqueueStatusSpeech(pcm: Buffer, userId: string): void {
+    if (this.closed) return;
+    const item = { pcm, kind: "status" as const, userId };
+    const firstReply = this.playbackQueue.findIndex((queued) => queued.kind === "reply");
+    if (firstReply === -1) this.playbackQueue.push(item);
+    else this.playbackQueue.splice(firstReply, 0, item);
+    logInfo("voice.status_speech.queued", this.context({ userId, queued: this.playbackQueue.length }));
     this.startQueuedPlayback();
   }
 

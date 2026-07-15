@@ -106,6 +106,72 @@ class LanguageModelToolChoiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(answer, "")
         self.assertEqual(len(payloads), 1)
 
+    async def test_tool_status_speech_uses_neutral_announcement(self) -> None:
+        model = LanguageModel(Settings())
+        spoken: list[str] = []
+        completions = iter(
+            [
+                (
+                    {
+                        "content": "",
+                        "reasoning_content": "",
+                        "tool_calls": [
+                            {
+                                "id": "weather-1",
+                                "type": "function",
+                                "function": {
+                                    "name": "get_current_weather",
+                                    "arguments": '{"city":"Москва"}',
+                                },
+                            }
+                        ],
+                    },
+                    "tool_calls",
+                ),
+                (
+                    {
+                        "content": "В Москве ясно.",
+                        "reasoning_content": "",
+                        "tool_calls": [],
+                    },
+                    "stop",
+                ),
+            ]
+        )
+
+        async def fake_completion(_payload, _request_number):
+            return next(completions)
+
+        async def tool_handler(name, _arguments):
+            self.assertEqual(name, "get_current_weather")
+            return '{"ok":true}'
+
+        async def on_status_speech(text: str) -> None:
+            spoken.append(text)
+
+        model._stream_completion = fake_completion
+        try:
+            answer = await model.reply(
+                [],
+                "Какая погода?",
+                [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "get_current_weather",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+                tool_handler,
+                on_status_speech=on_status_speech,
+            )
+        finally:
+            await model.close()
+
+        self.assertEqual(answer, "В Москве ясно.")
+        self.assertEqual(spoken, ["Секунду, смотрю погоду."])
+
     async def test_terminal_tool_can_supply_backend_response(self) -> None:
         model = LanguageModel(Settings())
         payloads = []

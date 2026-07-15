@@ -356,14 +356,15 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result, '{"found":true}')
             self.assertEqual(public_information.call, ("search_web", {"query": "тест"}))
 
-    def test_end_conversation_tool_lists_every_configured_stop_phrase(self) -> None:
+    def test_end_conversation_tool_stays_compact(self) -> None:
         serialized_tool = json.dumps(
             app_module.END_CONVERSATION_TOOL, ensure_ascii=False
         )
 
-        for phrase in app_module.settings.stop_phrases:
-            self.assertIn(phrase, serialized_tool)
-        self.assertIn("Не требуй", serialized_tool)
+        self.assertIn("end_conversation", serialized_tool)
+        self.assertIn("Не проси специальное слово", serialized_tool)
+        self.assertNotIn("стопэ", serialized_tool)
+        self.assertLess(len(serialized_tool), 700)
 
     async def test_parallel_users_receive_distinct_identity_context(self) -> None:
         class CapturingLanguageModel:
@@ -406,7 +407,8 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("author_identity=speaker_1", second_history[0]["content"])
             self.assertIn("reply_to_identity=speaker_1", second_history[1]["content"])
             self.assertIn("current_identity", second_prompt)
-            self.assertIn("Не переноси вопросы", second_prompt)
+            self.assertIn("не переноси на других", second_prompt.casefold())
+
         finally:
             app_module.followups.stop_guild(guild_id)
             app_module.store.reset(guild_id)
@@ -434,6 +436,7 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
             with (
                 patch.object(app_module, "recognition_queue", recognition),
                 patch.object(app_module, "generation_queue", generation),
+                patch.object(app_module, "tts", _FakeTextToSpeech()),
             ):
                 result = await app_module.execute_assistant_tool(
                     request,
@@ -444,12 +447,15 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertIsInstance(result, ToolResult)
             self.assertTrue(result.terminate)
+            self.assertIsNone(result.response)
             self.assertFalse(app_module.store.followup_active(guild_id, "user"))
             self.assertEqual(recognition.cancelled, guild_id)
             self.assertEqual(generation.cancelled, guild_id)
             event = events.get_nowait()
             self.assertEqual(event.type, "followup_stopped")
             self.assertEqual(event.userId, "user")
+            self.assertEqual(event.content, app_module.END_CONVERSATION_FAREWELL)
+            self.assertTrue(event.audioBase64)
         finally:
             app_module.followups.stop_guild(guild_id)
             app_module.store.reset(guild_id)
