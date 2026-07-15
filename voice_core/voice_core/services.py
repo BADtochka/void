@@ -20,6 +20,7 @@ from .audio_effects import apply_robotic_voice_effect
 from .dialogue import normalize_phrase
 from .speech_normalization import normalize_russian_tts_text
 from .whisper_models import resolve_model
+from .windows_dlls import configure_windows_cuda_dlls
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +129,7 @@ class SpeechToText:
 
     def _load(self) -> Any:
         if self._model is None:
+            configure_windows_cuda_dlls()
             from faster_whisper import WhisperModel
 
             model_path = resolve_model(self._settings.whisper_model)
@@ -139,6 +141,7 @@ class SpeechToText:
         return self._model
 
     def _transcribe_sync(self, audio: np.ndarray) -> str:
+        configure_windows_cuda_dlls()
         if self._settings.whisper_speech_gate:
             from faster_whisper.vad import VadOptions, get_speech_timestamps
 
@@ -202,6 +205,7 @@ class HotwordDetector:
             if self._model is not None:
                 return self._model
 
+            configure_windows_cuda_dlls()
             from faster_whisper import WhisperModel
 
             model_path = resolve_model(self._settings.hotword_model)

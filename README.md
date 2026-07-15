@@ -124,6 +124,14 @@ WHISPER_DEVICE=cuda
 WHISPER_COMPUTE_TYPE=float16
 ```
 
+На Windows `voice_core/requirements.txt` дополнительно устанавливает CUDA 12 runtime-библиотеки NVIDIA внутрь `.venv`. При загрузке Whisper backend автоматически регистрирует все каталоги `.venv/Lib/site-packages/nvidia/*/bin` через `os.add_dll_directory`, поэтому ручное изменение `$env:Path` после каждого перезапуска не требуется. Запускайте backend Python-интерпретатором именно из окружения:
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn voice_core.app:app --app-dir voice_core --host 0.0.0.0 --port 8765
+```
+
+В логе успешного запуска появится `Registered Windows CUDA DLL directories`. Если каталогов нет, backend выведет отдельное предупреждение до загрузки Whisper.
+
 Если распознавание на CPU медленное, используйте `WHISPER_MODEL=base`. Если качество русского недостаточно и хватает ресурсов, используйте `medium`.
 
 Раннее распознавание wake word использует отдельную лёгкую модель и не ждёт завершения реплики:
