@@ -19,6 +19,7 @@ export type ImagePrompt = {
 export type HotwordResult = { detected: boolean; transcript: string; busy?: boolean };
 export type UserDirectoryEntry = { userId: string; displayName: string };
 export type TtsVoice = { id: string; label: string; engine: string };
+export type TtsEffect = { id: string; label: string };
 
 export async function detectHotword(
   pcm: Buffer,
@@ -144,13 +145,23 @@ export async function getCoreHealth(): Promise<string> {
 
 export async function getTtsVoices(
   guildId: string,
-): Promise<{ selected: string; voices: TtsVoice[] }> {
+): Promise<{
+  selected: string;
+  voices: TtsVoice[];
+  selectedEffect: string;
+  effects: TtsEffect[];
+}> {
   const response = await fetch(
     `${config.voiceCoreUrl}/v1/guilds/${encodeURIComponent(guildId)}/tts`,
     { signal: AbortSignal.timeout(5_000) },
   );
   if (!response.ok) throw new Error(`voice-core TTS list returned ${response.status}`);
-  return (await response.json()) as { selected: string; voices: TtsVoice[] };
+  return (await response.json()) as {
+    selected: string;
+    voices: TtsVoice[];
+    selectedEffect: string;
+    effects: TtsEffect[];
+  };
 }
 
 export async function setTtsVoice(guildId: string, voiceId: string): Promise<TtsVoice> {
@@ -167,4 +178,20 @@ export async function setTtsVoice(guildId: string, voiceId: string): Promise<Tts
     throw new Error(`voice-core TTS selection returned ${response.status}: ${await response.text()}`);
   }
   return (await response.json()) as TtsVoice;
+}
+
+export async function setTtsEffect(guildId: string, effectId: string): Promise<TtsEffect> {
+  const response = await fetch(
+    `${config.voiceCoreUrl}/v1/guilds/${encodeURIComponent(guildId)}/tts/effect`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ effectId }),
+      signal: AbortSignal.timeout(config.coreTimeoutMs),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`voice-core TTS effect returned ${response.status}: ${await response.text()}`);
+  }
+  return (await response.json()) as TtsEffect;
 }

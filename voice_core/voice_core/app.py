@@ -70,6 +70,10 @@ class TtsSelection(BaseModel):
     voiceId: str = Field(min_length=1, max_length=100)
 
 
+class TtsEffectSelection(BaseModel):
+    effectId: str = Field(min_length=1, max_length=32)
+
+
 END_CONVERSATION_TOOL: dict[str, object] = {
     "type": "function",
     "function": {
@@ -698,6 +702,8 @@ async def get_tts_selection(guild_id: str) -> dict[str, object]:
     return {
         "selected": tts.selected_voice(guild_id),
         "voices": [voice.as_dict() for voice in tts.voices()],
+        "selectedEffect": tts.selected_effect(guild_id),
+        "effects": [effect.as_dict() for effect in tts.effects()],
     }
 
 
@@ -716,6 +722,22 @@ async def set_tts_selection(
         voice.engine,
     )
     return voice.as_dict()
+
+
+@app.put("/v1/guilds/{guild_id}/tts/effect")
+async def set_tts_effect(
+    guild_id: str, selection: TtsEffectSelection
+) -> dict[str, str]:
+    try:
+        effect = await tts.select_effect(guild_id, selection.effectId)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    logger.info(
+        "TTS effect selected guild_id=%s effect_id=%s",
+        guild_id,
+        effect.id,
+    )
+    return effect.as_dict()
 
 
 @app.post("/v1/hotword")

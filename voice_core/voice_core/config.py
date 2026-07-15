@@ -25,6 +25,13 @@ def _positive_float(name: str, default: float) -> float:
     return value
 
 
+def _bounded_float(name: str, default: float, minimum: float, maximum: float) -> float:
+    value = float(os.getenv(name, default))
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    return value
+
+
 def _boolean(name: str, default: bool) -> bool:
     raw = os.getenv(name)
     if raw is None:
@@ -79,6 +86,22 @@ class Settings:
     silero_put_yo: bool = _boolean("SILERO_PUT_YO", True)
     silero_sentence_silence_ms: int = _non_negative_int(
         "SILERO_SENTENCE_SILENCE_MS", 220
+    )
+    tts_default_effect: str = os.getenv("TTS_DEFAULT_EFFECT", "none").strip().casefold()
+    tts_robot_pitch_semitones: float = _bounded_float(
+        "TTS_ROBOT_PITCH_SEMITONES", -1.5, -6.0, 6.0
+    )
+    tts_robot_harmony_volume: float = _bounded_float(
+        "TTS_ROBOT_HARMONY_VOLUME", 0.10, 0.0, 0.5
+    )
+    tts_robot_modulation_hz: float = _bounded_float(
+        "TTS_ROBOT_MODULATION_HZ", 35.0, 1.0, 200.0
+    )
+    tts_robot_modulation_depth: float = _bounded_float(
+        "TTS_ROBOT_MODULATION_DEPTH", 0.07, 0.0, 0.5
+    )
+    tts_robot_reverb: float = _bounded_float(
+        "TTS_ROBOT_REVERB", 0.06, 0.0, 0.4
     )
     wake_word: str = os.getenv("WAKE_WORD", "омни").strip().casefold()
     wake_word_aliases: tuple[str, ...] = _casefold_csv(

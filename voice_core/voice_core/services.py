@@ -16,6 +16,7 @@ import httpx
 import numpy as np
 
 from .config import Settings
+from .audio_effects import apply_robotic_voice_effect
 from .dialogue import normalize_phrase
 from .speech_normalization import normalize_russian_tts_text
 from .whisper_models import resolve_model
@@ -51,6 +52,15 @@ class TtsVoice:
     id: str
     label: str
     engine: str
+
+    def as_dict(self) -> dict[str, str]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class TtsEffect:
+    id: str
+    label: str
 
     def as_dict(self) -> dict[str, str]:
         return asdict(self)
@@ -496,6 +506,10 @@ class TextToSpeech:
     _SILERO_MODEL = "v5_5_ru"
     _SILERO_MODEL_URL = "https://models.silero.ai/models/tts/ru/v5_5_ru.pt"
     _SILERO_SPEAKERS = ("aidar", "baya", "kseniya", "xenia", "eugene")
+    _EFFECTS = (
+        TtsEffect("none", "Обычный"),
+        TtsEffect("robotic", "Роботизированный"),
+    )
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -518,10 +532,19 @@ class TextToSpeech:
                 f"unknown TTS_DEFAULT_VOICE: {self._default_voice_id}; "
                 f"available voices: {available}"
             )
+        available_effect_ids = {effect.id for effect in self._EFFECTS}
+        self._default_effect_id = settings.tts_default_effect
+        if self._default_effect_id not in available_effect_ids:
+            available = ", ".join(sorted(available_effect_ids))
+            raise ValueError(
+                f"unknown TTS_DEFAULT_EFFECT: {self._default_effect_id}; "
+                f"available effects: {available}"
+            )
         self._silero_model_path = configured_path.parent / f"{self._SILERO_MODEL}.pt"
         self._piper_models: dict[str, Any] = {}
         self._silero_model: Any = None
         self._guild_voices: dict[str, str] = {}
+        self._guild_effects: dict[str, str] = {}
         self._lock = asyncio.Lock()
 
     def voices(self) -> list[TtsVoice]:
@@ -537,6 +560,20 @@ class TextToSpeech:
 
     def selected_voice(self, guild_id: str) -> str:
         return self._guild_voices.get(guild_id, self._default_voice_id)
+
+    def effects(self) -> list[TtsEffect]:
+        return list(self._EFFECTS)
+
+    def selected_effect(self, guild_id: str) -> str:
+        return self._guild_effects.get(guild_id, self._default_effect_id)
+
+    async def select_effect(self, guild_id: str, effect_id: str) -> TtsEffect:
+        effect = next((item for item in self._EFFECTS if item.id == effect_id), None)
+        if effect is None:
+            raise ValueError(f"unknown TTS effect: {effect_id}")
+        async with self._lock:
+            self._guild_effects[guild_id] = effect_id
+        return effect
 
     async def select_voice(self, guild_id: str, voice_id: str) -> TtsVoice:
         voice = next((item for item in self.voices() if item.id == voice_id), None)
@@ -674,15 +711,30 @@ class TextToSpeech:
         return np.concatenate(audio_parts), 48_000
 
     def _synthesize_sync(
-        self, text: str, voice_id: str
+        self, text: str, voice_id: str, effect_id: str
     ) -> tuple[np.ndarray, int]:
         if voice_id.startswith("silero:"):
-            return self._synthesize_silero_sync(text, voice_id)
-        return self._synthesize_piper_sync(text, voice_id)
+            audio, sample_rate = self._synthesize_silero_sync(text, voice_id)
+        else:
+            audio, sample_rate = self._synthesize_piper_sync(text, voice_id)
+        if effect_id == "robotic":
+            audio = apply_robotic_voice_effect(
+                audio,
+                sample_rate,
+                pitch_semitones=self._settings.tts_robot_pitch_semitones,
+                harmony_volume=self._settings.tts_robot_harmony_volume,
+                modulation_hz=self._settings.tts_robot_modulation_hz,
+                modulation_depth=self._settings.tts_robot_modulation_depth,
+                reverb_amount=self._settings.tts_robot_reverb,
+            )
+        return audio, sample_rate
 
     async def synthesize(
         self, text: str, guild_id: str
     ) -> tuple[np.ndarray, int]:
         async with self._lock:
             voice_id = self.selected_voice(guild_id)
-            return await asyncio.to_thread(self._synthesize_sync, text, voice_id)
+            effect_id = self.selected_effect(guild_id)
+            return await asyncio.to_thread(
+                self._synthesize_sync, text, voice_id, effect_id
+            )

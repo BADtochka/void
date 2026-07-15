@@ -62,6 +62,12 @@ class _FakeSelectableTextToSpeech:
             )
         ]
 
+    def selected_effect(self, guild_id):
+        return f"effect:{guild_id}"
+
+    def effects(self):
+        return [SimpleNamespace(as_dict=lambda: {"id": "robotic", "label": "Роботизированный"})]
+
     async def select_voice(self, _guild_id, voice_id):
         if voice_id != "silero:xenia":
             raise ValueError("unknown TTS voice")
@@ -74,6 +80,15 @@ class _FakeSelectableTextToSpeech:
                 "label": "Silero · xenia",
                 "engine": "silero",
             },
+        )
+
+    async def select_effect(self, _guild_id, effect_id):
+        if effect_id != "robotic":
+            raise ValueError("unknown TTS effect")
+        return SimpleNamespace(
+            id=effect_id,
+            label="Роботизированный",
+            as_dict=lambda: {"id": effect_id, "label": "Роботизированный"},
         )
 
 class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
@@ -383,10 +398,16 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
             selected = await app_module.set_tts_selection(
                 "guild", app_module.TtsSelection(voiceId="silero:xenia")
             )
+            selected_effect = await app_module.set_tts_effect(
+                "guild", app_module.TtsEffectSelection(effectId="robotic")
+            )
 
         self.assertEqual(listed["selected"], "selected:guild")
         self.assertEqual(listed["voices"][0]["id"], "silero:xenia")
+        self.assertEqual(listed["selectedEffect"], "effect:guild")
+        self.assertEqual(listed["effects"][0]["id"], "robotic")
         self.assertEqual(selected["id"], "silero:xenia")
+        self.assertEqual(selected_effect["id"], "robotic")
 
     async def test_turn_endpoint_splits_pcm_and_image(self) -> None:
         captured: list[TurnRequest] = []

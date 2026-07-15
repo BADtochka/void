@@ -537,6 +537,41 @@ class TextToSpeechTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await tts.select_voice("guild", "silero:unknown")
 
+    async def test_selects_and_applies_robotic_effect_per_guild(self) -> None:
+        tts = TextToSpeech(replace(Settings(), tts_default_voice="silero:xenia"))
+
+        class FakeSilero:
+            def apply_tts(self, **_options):
+                return np.array([0.4, -0.2], dtype=np.float32)
+
+        tts._load_silero = lambda: FakeSilero()
+        effect_calls = []
+
+        def fake_effect(audio, sample_rate, **options):
+            effect_calls.append((audio.copy(), sample_rate, options))
+            return audio * 0.5
+
+        with patch("voice_core.services.apply_robotic_voice_effect", fake_effect):
+            selected = await tts.select_effect("guild", "robotic")
+            audio, sample_rate = await tts.synthesize("Привет", "guild")
+
+        self.assertEqual(selected.id, "robotic")
+        self.assertEqual(tts.selected_effect("guild"), "robotic")
+        self.assertEqual(tts.selected_effect("other"), "none")
+        self.assertEqual(sample_rate, 48_000)
+        np.testing.assert_array_equal(audio, np.array([0.2, -0.1], dtype=np.float32))
+        self.assertEqual(len(effect_calls), 1)
+        self.assertEqual(effect_calls[0][2]["pitch_semitones"], -1.5)
+
+    async def test_rejects_unknown_effect(self) -> None:
+        tts = TextToSpeech(Settings())
+        with self.assertRaises(ValueError):
+            await tts.select_effect("guild", "vocoder")
+
+    def test_rejects_unknown_default_effect_at_startup(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unknown TTS_DEFAULT_EFFECT"):
+            TextToSpeech(replace(Settings(), tts_default_effect="vocoder"))
+
     def test_uses_configured_silero_voice_by_default(self) -> None:
         tts = TextToSpeech(
             replace(Settings(), tts_default_voice="silero:kseniya")

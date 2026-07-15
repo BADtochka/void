@@ -22,6 +22,7 @@ import {
   getCoreHealth,
   getTtsVoices,
   resetConversation,
+  setTtsEffect,
   setTtsVoice,
   syncUserDirectory,
 } from "./core-client.js";
@@ -76,6 +77,10 @@ async function registerCommands(): Promise<void> {
     name: voice.label,
     value: voice.id,
   }));
+  const effectChoices = tts.effects.slice(0, 25).map((effect) => ({
+    name: effect.label,
+    value: effect.id,
+  }));
   const commands = [
     new SlashCommandBuilder().setName("join").setDescription("Подключить ассистента к вашему voice-каналу"),
     new SlashCommandBuilder().setName("leave").setDescription("Отключить ассистента от voice-канала"),
@@ -96,6 +101,16 @@ async function registerCommands(): Promise<void> {
           .setDescription("Модель озвучки")
           .setRequired(true)
           .addChoices(...voiceChoices),
+      ),
+    new SlashCommandBuilder()
+      .setName("effect")
+      .setDescription("Переключить обработку голоса")
+      .addStringOption((option) =>
+        option
+          .setName("profile")
+          .setDescription("Профиль обработки")
+          .setRequired(true)
+          .addChoices(...effectChoices),
       ),
   ].map((command) => command.toJSON());
   const rest = new REST().setToken(config.discordToken);
@@ -284,6 +299,14 @@ async function handleInteraction(interaction: ChatInputCommandInteraction): Prom
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const voice = await setTtsVoice(guildId, voiceId);
       await interaction.editReply(`Озвучка переключена: ${voice.label}.`);
+      break;
+    }
+    case "effect": {
+      if (!guildId) throw new Error("This command is only available in a guild");
+      const effectId = interaction.options.getString("profile", true);
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const effect = await setTtsEffect(guildId, effectId);
+      await interaction.editReply(`Обработка голоса: ${effect.label}.`);
       break;
     }
   }
