@@ -350,6 +350,18 @@ class GenerationQueue:
             )
         return cancelled
 
+    async def cancel_pending_speaker(self, guild_id: str, user_id: str) -> int:
+        async with self._condition:
+            cancelled = self._cancel_pending_speaker(guild_id, user_id)
+        if cancelled:
+            logger.info(
+                "Pending generation requests cancelled guild_id=%s user_id=%s count=%s",
+                guild_id,
+                user_id,
+                cancelled,
+            )
+        return cancelled
+
     def stats(self) -> dict[str, int | bool]:
         return {
             "generation_active": self._active_item is not None,
@@ -394,6 +406,26 @@ class GenerationQueue:
                 kept_direct.append(item)
         self._direct = kept_direct
         self._cancel_followups(guild_id)
+        return self._coalesced - cancelled_before
+
+    def _cancel_pending_speaker(self, guild_id: str, user_id: str) -> int:
+        cancelled_before = self._coalesced
+        kept_direct: deque[_GenerationItem] = deque()
+        while self._direct:
+            item = self._direct.popleft()
+            request = item.turn.request
+            if request.guild_id == guild_id and request.user_id == user_id:
+                self._coalesced += 1
+                _resolve(item.future, None)
+            else:
+                kept_direct.append(item)
+        self._direct = kept_direct
+        for key, item in list(self._followups.items()):
+            if key[0] != guild_id or key[2] != user_id:
+                continue
+            self._followups.pop(key)
+            self._coalesced += 1
+            _resolve(item.future, None)
         return self._coalesced - cancelled_before
 
     def _cancel_all_pending(self) -> None:

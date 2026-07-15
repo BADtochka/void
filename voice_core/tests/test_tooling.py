@@ -26,12 +26,17 @@ class ToolingTests(unittest.TestCase):
         self.assertTrue(requested_end_conversation("хватит"))
         self.assertFalse(requested_end_conversation("какая погода в Москве"))
 
-    def test_required_tool_is_never_forced(self) -> None:
+    def test_user_identity_operations_force_the_matching_tool(self) -> None:
         self.assertIsNone(
             required_tool_for_turn("давай завершим", web_search_allowed=False)
         )
-        self.assertIsNone(
-            required_tool_for_turn("как меня зовут", web_search_allowed=False)
+        self.assertEqual(
+            required_tool_for_turn("как меня зовут", web_search_allowed=False),
+            "lookup_user_name",
+        )
+        self.assertEqual(
+            required_tool_for_turn("называй меня Кэп", web_search_allowed=False),
+            "remember_preferred_name",
         )
         self.assertIsNone(
             required_tool_for_turn("какая погода", web_search_allowed=True)

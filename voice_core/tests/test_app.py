@@ -150,7 +150,9 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
         guild_id = "chat-tool-test"
         request = TurnRequest(b"", guild_id, "channel", "user", "User")
         deliveries: list[str | None] = []
-        app_module.store.append_turn(guild_id, "вопрос", "Предыдущий ответ")
+        app_module.store.append_turn(
+            guild_id, "вопрос", "Предыдущий ответ", speaker_id="user"
+        )
         try:
             await app_module.execute_assistant_tool(
                 request,
@@ -249,7 +251,7 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
                     )
 
                 self.assertEqual(
-                    model.required_tool_name, None
+                    model.required_tool_name, "remember_preferred_name"
                 )
                 self.assertEqual(memory.get(guild_id, "user", "preferred_name"), "рыжий")
             finally:
@@ -378,7 +380,7 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("стопэ", serialized_tool)
         self.assertLess(len(serialized_tool), 700)
 
-    async def test_parallel_users_receive_distinct_identity_context(self) -> None:
+    async def test_parallel_users_receive_isolated_history_and_identity_context(self) -> None:
         class CapturingLanguageModel:
             def __init__(self):
                 self.calls = []
@@ -413,11 +415,10 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(first_history, [])
             self.assertIn('"identity_key": "speaker_1"', first_prompt)
             self.assertNotIn('"identity_key": "speaker_2"', first_prompt)
-            self.assertIn('"identity_key": "speaker_1"', second_prompt)
+            self.assertNotIn('"identity_key": "speaker_1"', second_prompt)
             self.assertIn('"identity_key": "speaker_2"', second_prompt)
             self.assertIn("current_identity=speaker_2", second_prompt)
-            self.assertIn("author_identity=speaker_1", second_history[0]["content"])
-            self.assertIn("reply_to_identity=speaker_1", second_history[1]["content"])
+            self.assertEqual(second_history, [])
             self.assertIn("current_identity", second_prompt)
             self.assertIn("не переноси на других", second_prompt.casefold())
 
@@ -696,6 +697,40 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
             app_module.store.reset(guild_id)
             app_module.event_bus.unsubscribe(events)
             await asyncio.sleep(0)
+
+    async def test_followup_expiry_clears_user_dialogue_and_pending_work(self) -> None:
+        class FakeRecognitionQueue:
+            async def cancel_speaker(self, guild_id, user_id):
+                self.cancelled = (guild_id, user_id)
+                return 2
+
+        class FakeGenerationQueue:
+            async def cancel_pending_speaker(self, guild_id, user_id):
+                self.cancelled = (guild_id, user_id)
+                return 1
+
+        guild_id = "expired-dialogue-test"
+        user_id = "user"
+        recognition = FakeRecognitionQueue()
+        generation = FakeGenerationQueue()
+        app_module.store.append_turn(
+            guild_id, "старый вопрос", "старый ответ", speaker_id=user_id
+        )
+        app_module.store.open_followup(guild_id, user_id)
+        try:
+            with (
+                patch.object(app_module, "recognition_queue", recognition),
+                patch.object(app_module, "generation_queue", generation),
+            ):
+                await app_module.expire_dialogue(guild_id, "channel", user_id)
+
+            self.assertEqual(app_module.store.history(guild_id, user_id), [])
+            self.assertFalse(app_module.store.followup_active(guild_id, user_id))
+            self.assertTrue(app_module.store.cooldown_active(guild_id, user_id))
+            self.assertEqual(recognition.cancelled, (guild_id, user_id))
+            self.assertEqual(generation.cancelled, (guild_id, user_id))
+        finally:
+            app_module.store.reset(guild_id)
 
     async def test_early_hotword_without_continuation_does_not_generate(self) -> None:
         guild_id = "hotword-only-test"

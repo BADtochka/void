@@ -8,10 +8,13 @@ from dataclasses import dataclass, field
 
 @dataclass
 class Conversation:
-    messages: list[dict[str, str]] = field(default_factory=list)
+    messages_by_user: dict[str, list[dict[str, str]]] = field(default_factory=dict)
     active_users: dict[str, float] = field(default_factory=dict)
     awaiting_content_user: str | None = None
     participants: dict[str, Participant] = field(default_factory=dict)
+    next_identity_number: int = 1
+    cooldown_until: float = 0.0
+    cooldown_until_by_user: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -99,6 +102,7 @@ class ConversationStore:
         stop_phrases: tuple[str, ...] = (),
         followup_min_chars: int = 0,
         followup_ignore_phrases: tuple[str, ...] = (),
+        dialogue_cooldown_seconds: float = 0.0,
     ) -> None:
         self._wake_word_label = wake_word.strip().capitalize()
         self._wake_words = tuple(dict.fromkeys((wake_word, *wake_word_aliases))) if wake_word else ()
@@ -143,6 +147,7 @@ class ConversationStore:
         self._followup_ignore_phrases = frozenset(
             normalize_phrase(phrase) for phrase in followup_ignore_phrases
         )
+        self._dialogue_cooldown_seconds = dialogue_cooldown_seconds
         self._max_messages = max_turns * 2
         self._items: dict[str, Conversation] = {}
 
@@ -181,12 +186,17 @@ class ConversationStore:
         if not text:
             return None
 
-        if self.stop_if_requested(key, text):
+        if self.stop_if_requested(key, text, now=now):
             return None
 
         conversation = self._items.setdefault(key, Conversation())
         current_time = time.monotonic() if now is None else now
         eligibility_time = current_time if utterance_started_at is None else utterance_started_at
+        if eligibility_time <= max(
+            conversation.cooldown_until,
+            conversation.cooldown_until_by_user.get(speaker_id, 0.0),
+        ):
+            return None
         awaiting_user = conversation.awaiting_content_user
         if (
             awaiting_user is not None
@@ -247,10 +257,12 @@ class ConversationStore:
             return AcceptedSpeech(text, direct_wake=False)
         return None
 
-    def stop_if_requested(self, key: str, transcript: str) -> bool:
+    def stop_if_requested(
+        self, key: str, transcript: str, now: float | None = None
+    ) -> bool:
         if not self._is_stop_request(transcript):
             return False
-        self.stop(key)
+        self.stop(key, now=now)
         return True
 
     def _strip_wake_phrases(self, normalized: str) -> str:
@@ -303,10 +315,46 @@ class ConversationStore:
                 return True
         return False
 
-    def stop(self, key: str) -> None:
+    def stop(self, key: str, now: float | None = None) -> None:
+        self.finish(key, now=now)
+
+    def finish(
+        self,
+        key: str,
+        speaker_id: str | None = None,
+        now: float | None = None,
+    ) -> None:
         conversation = self._items.setdefault(key, Conversation())
-        conversation.active_users.clear()
-        conversation.awaiting_content_user = None
+        current_time = time.monotonic() if now is None else now
+        cooldown_until = (
+            current_time + self._dialogue_cooldown_seconds
+            if self._dialogue_cooldown_seconds > 0
+            else 0.0
+        )
+        if speaker_id is None:
+            conversation.active_users.clear()
+            conversation.awaiting_content_user = None
+            conversation.messages_by_user.clear()
+            conversation.participants.clear()
+            conversation.cooldown_until = cooldown_until
+            return
+
+        conversation.active_users.pop(speaker_id, None)
+        if conversation.awaiting_content_user == speaker_id:
+            conversation.awaiting_content_user = None
+        conversation.messages_by_user.pop(speaker_id, None)
+        conversation.participants.pop(speaker_id, None)
+        conversation.cooldown_until_by_user[speaker_id] = cooldown_until
+
+    def cooldown_active(
+        self, key: str, speaker_id: str, now: float | None = None
+    ) -> bool:
+        current_time = time.monotonic() if now is None else now
+        conversation = self._items.setdefault(key, Conversation())
+        return current_time <= max(
+            conversation.cooldown_until,
+            conversation.cooldown_until_by_user.get(speaker_id, 0.0),
+        )
 
     def followup_active(
         self, key: str, speaker_id: str, now: float | None = None
@@ -317,17 +365,26 @@ class ConversationStore:
 
     def open_followup(
         self, key: str, speaker_id: str, now: float | None = None
-    ) -> None:
+    ) -> bool:
         current_time = time.monotonic() if now is None else now
         conversation = self._items.setdefault(key, Conversation())
+        if current_time <= max(
+            conversation.cooldown_until,
+            conversation.cooldown_until_by_user.get(speaker_id, 0.0),
+        ):
+            return False
         conversation.active_users[speaker_id] = current_time + self._followup_seconds
+        return True
 
     def hold_followup(self, key: str, speaker_id: str) -> None:
         conversation = self._items.setdefault(key, Conversation())
         conversation.active_users[speaker_id] = float("inf")
 
-    def history(self, key: str) -> list[dict[str, str]]:
-        return list(self._items.setdefault(key, Conversation()).messages)
+    def history(
+        self, key: str, speaker_id: str = "default"
+    ) -> list[dict[str, str]]:
+        conversation = self._items.setdefault(key, Conversation())
+        return list(conversation.messages_by_user.get(speaker_id, ()))
 
     def register_participant(
         self,
@@ -340,18 +397,24 @@ class ConversationStore:
         participant = conversation.participants.get(speaker_id)
         if participant is None:
             participant = Participant(
-                identity_key=f"speaker_{len(conversation.participants) + 1}",
+                identity_key=f"speaker_{conversation.next_identity_number}",
                 display_name=display_name,
                 preferred_name=preferred_name,
             )
+            conversation.next_identity_number += 1
             conversation.participants[speaker_id] = participant
         else:
             participant.display_name = display_name
             participant.preferred_name = preferred_name
         return participant
 
-    def participants(self, key: str) -> tuple[Participant, ...]:
+    def participants(
+        self, key: str, speaker_id: str | None = None
+    ) -> tuple[Participant, ...]:
         conversation = self._items.setdefault(key, Conversation())
+        if speaker_id is not None:
+            participant = conversation.participants.get(speaker_id)
+            return (participant,) if participant is not None else ()
         return tuple(conversation.participants.values())
 
     def append_turn(
@@ -360,10 +423,12 @@ class ConversationStore:
         user_text: str,
         assistant_text: str,
         *,
+        speaker_id: str = "default",
         identity_key: str | None = None,
         speaker_name: str | None = None,
     ) -> None:
-        messages = self._items.setdefault(key, Conversation()).messages
+        conversation = self._items.setdefault(key, Conversation())
+        messages = conversation.messages_by_user.setdefault(speaker_id, [])
         if identity_key:
             encoded_name = json.dumps(speaker_name or "", ensure_ascii=False)
             user_text = (
@@ -382,11 +447,13 @@ class ConversationStore:
         )
         del messages[: max(0, len(messages) - self._max_messages)]
 
-    def last_assistant_message(self, key: str) -> str | None:
+    def last_assistant_message(
+        self, key: str, speaker_id: str = "default"
+    ) -> str | None:
         conversation = self._items.get(key)
         if conversation is None:
             return None
-        for message in reversed(conversation.messages):
+        for message in reversed(conversation.messages_by_user.get(speaker_id, ())):
             if message["role"] == "assistant":
                 content = message["content"]
                 if content.startswith("reply_to_identity="):

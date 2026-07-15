@@ -136,6 +136,9 @@ class Settings:
         "хватит слушать,можешь отключиться",
     )
     followup_seconds: float = _positive_float("FOLLOWUP_SECONDS", 30.0)
+    dialogue_cooldown_seconds: float = _bounded_float(
+        "DIALOGUE_COOLDOWN_SECONDS", 2.0, 0.0, 30.0
+    )
     followup_min_chars: int = _non_negative_int("FOLLOWUP_MIN_CHARS", 4)
     followup_ignore_phrases: tuple[str, ...] = _casefold_csv(
         "FOLLOWUP_IGNORE_PHRASES", "да,ага,угу,нет,ок,окей,ладно,понятно"

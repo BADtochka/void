@@ -30,6 +30,61 @@ class ConversationStoreTests(unittest.TestCase):
         self.assertIn("Запомнил.", history[1]["content"])
         self.assertEqual(store.last_assistant_message("guild"), "Запомнил.")
 
+    def test_history_is_isolated_by_discord_user(self) -> None:
+        store = ConversationStore("омни", 30, 8)
+        store.append_turn(
+            "guild", "первый вопрос", "первый ответ", speaker_id="user-1"
+        )
+        store.append_turn(
+            "guild", "второй вопрос", "второй ответ", speaker_id="user-2"
+        )
+
+        self.assertEqual(store.history("guild", "user-1")[0]["content"], "первый вопрос")
+        self.assertEqual(store.history("guild", "user-2")[0]["content"], "второй вопрос")
+        self.assertEqual(
+            store.last_assistant_message("guild", "user-1"), "первый ответ"
+        )
+
+    def test_finish_clears_user_history_and_rejects_stale_audio_during_cooldown(self) -> None:
+        store = ConversationStore(
+            "омни", 30, 8, dialogue_cooldown_seconds=2
+        )
+        store.append_turn("guild", "вопрос", "ответ", speaker_id="user")
+        store.open_followup("guild", "user", now=10)
+
+        store.finish("guild", "user", now=20)
+
+        self.assertEqual(store.history("guild", "user"), [])
+        self.assertFalse(store.followup_active("guild", "user", now=20))
+        self.assertIsNone(
+            store.accept_turn(
+                "guild",
+                "Омни, старая запись",
+                speaker_id="user",
+                now=25,
+                utterance_started_at=19,
+            )
+        )
+        self.assertIsNone(
+            store.accept_turn(
+                "guild", "Омни, слишком рано", speaker_id="user", now=21
+            )
+        )
+        accepted = store.accept_turn(
+            "guild", "Омни, новый диалог", speaker_id="user", now=23
+        )
+        self.assertIsNotNone(accepted)
+        self.assertTrue(accepted.direct_wake)
+
+    def test_late_playback_confirmation_cannot_reopen_finished_dialogue(self) -> None:
+        store = ConversationStore(
+            "омни", 30, 8, dialogue_cooldown_seconds=2
+        )
+        store.finish("guild", "user", now=20)
+
+        self.assertFalse(store.open_followup("guild", "user", now=21))
+        self.assertTrue(store.open_followup("guild", "user", now=23))
+
     def test_history_ownership_metadata_is_not_spoken(self) -> None:
         text = (
             "[Служебная принадлежность исторического ответа] "

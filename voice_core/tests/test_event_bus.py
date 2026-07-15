@@ -63,6 +63,24 @@ class FollowupTrackerTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await tracker.close()
 
+    async def test_expiry_cleanup_runs_before_event_is_published(self) -> None:
+        bus = VoiceEventBus()
+        events = bus.subscribe()
+        cleaned: list[tuple[str, str, str]] = []
+
+        async def cleanup(guild_id: str, channel_id: str, user_id: str) -> None:
+            cleaned.append((guild_id, channel_id, user_id))
+
+        tracker = FollowupTracker(bus, cleanup)
+        try:
+            tracker.open("guild", "channel", "user", 0.01)
+            event = await asyncio.wait_for(events.get(), 0.05)
+
+            self.assertEqual(cleaned, [("guild", "channel", "user")])
+            self.assertEqual(event.type, "followup_expired")
+        finally:
+            await tracker.close()
+
 
 if __name__ == "__main__":
     unittest.main()

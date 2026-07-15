@@ -25,6 +25,7 @@ import { logError, logInfo, logWarn } from "./logger.js";
 import { microphoneIsNeeded } from "./microphone-state.js";
 import {
   captureAllowedForUser,
+  captureBlockedByCooldown,
   hotwordActionForCapture,
   userHasActiveTurn,
 } from "./voice-turn-state.js";
@@ -59,6 +60,8 @@ export class VoiceSession {
   private nextCaptureId = 1;
   private stopRevision = 0;
   private readonly hotwordBackoffUntilByUser = new Map<string, number>();
+  private globalDialogueCooldownUntil = 0;
+  private readonly dialogueCooldownUntilByUser = new Map<string, number>();
   private closed = false;
 
   constructor(
@@ -114,6 +117,7 @@ export class VoiceSession {
     this.awaitingContentConfirmed = false;
     this.pendingFollowupCountdownUsers.clear();
     this.hotwordBackoffUntilByUser.clear();
+    this.dialogueCooldownUntilByUser.clear();
     this.playbackQueue.length = 0;
     if (this.playbackStartTimer) clearTimeout(this.playbackStartTimer);
     this.playbackStartTimer = null;
@@ -182,12 +186,14 @@ export class VoiceSession {
         this.playCue("followup_recognized");
         break;
       case "followup_expired":
+        this.startDialogueCooldown(event.userId, false, "followup_expired");
         this.activeFollowupUsers.delete(event.userId);
         this.clearAwaitingContent(event.userId, "followup_expired");
         this.playCue("followup_expired");
         this.updateMicrophoneState("followup_expired");
         break;
       case "followup_stopped":
+        this.startDialogueCooldown(event.userId, true, "followup_stopped");
         this.stopRevision += 1;
         for (const controller of this.processingAbortControllers.values()) controller.abort();
         this.processingAbortControllers.clear();
@@ -232,6 +238,14 @@ export class VoiceSession {
   }
 
   private captureUser(userId: string): void {
+    const captureStartedAt = performance.now();
+    if (this.captureIsBlockedByCooldown(userId, captureStartedAt)) {
+      logInfo(
+        "voice.capture.ignored_during_dialogue_cooldown",
+        this.context({ userId, cooldownMs: config.dialogueCooldownMs }),
+      );
+      return;
+    }
     const awaitingContentUserId = this.awaitingContentUserId;
     if (!captureAllowedForUser(awaitingContentUserId, userId)) {
       logInfo(
@@ -286,7 +300,6 @@ export class VoiceSession {
     let activeHotwordInterrupted = false;
     let hotwordTimedOut = false;
     let hotwordCheckPromise: Promise<void> | null = null;
-    const captureStartedAt = performance.now();
     const sampleVoiceFloor = voicedSampleFloor(config.minVoicePeak);
 
     const voiceGateOptions = {
@@ -308,6 +321,7 @@ export class VoiceSession {
     const activateHotword = (transcript: string, detection: "early" | "final"): void => {
       if (
         this.closed ||
+        this.captureIsBlockedByCooldown(userId, captureStartedAt) ||
         earlyHotwordDetected ||
         this.userHasActiveTurn(userId) ||
         !captureAllowedForUser(this.awaitingContentUserId, userId)
@@ -356,6 +370,7 @@ export class VoiceSession {
     const checkHotword = (): Promise<void> | null => {
       if (
         finished ||
+        this.captureIsBlockedByCooldown(userId, captureStartedAt) ||
         (followupAtCaptureStart && !replyPlayingAtCaptureStart) ||
         imageAtCaptureStart ||
         earlyHotwordDetected ||
@@ -474,6 +489,14 @@ export class VoiceSession {
         logInfo(
           "voice.capture.cancelled_after_stop",
           this.context({ userId, displayName }),
+        );
+        return;
+      }
+      if (this.captureIsBlockedByCooldown(userId, captureStartedAt)) {
+        this.releasePendingWake(userId, earlyHotwordDetected, "dialogue_cooldown");
+        logInfo(
+          "voice.capture.discarded_during_dialogue_cooldown",
+          this.context({ userId, displayName, cooldownMs: config.dialogueCooldownMs }),
         );
         return;
       }
@@ -824,6 +847,34 @@ export class VoiceSession {
     if (!detected || !this.pendingWakeUsers.delete(userId)) return;
     if (!this.awaitingContentConfirmed) this.clearAwaitingContent(userId, reason);
     this.updateMicrophoneState(reason);
+  }
+
+  private startDialogueCooldown(
+    userId: string,
+    allUsers: boolean,
+    reason: string,
+  ): void {
+    const until = performance.now() + config.dialogueCooldownMs;
+    if (allUsers) this.globalDialogueCooldownUntil = until;
+    else this.dialogueCooldownUntilByUser.set(userId, until);
+    this.pendingWakeUsers.delete(userId);
+    this.pendingFollowupCountdownUsers.delete(userId);
+    for (const [captureId, processingUserId] of this.processingCaptures) {
+      if (!allUsers && processingUserId !== userId) continue;
+      this.processingAbortControllers.get(captureId)?.abort();
+    }
+    logInfo(
+      "voice.dialogue.cooldown_started",
+      this.context({ userId, allUsers, cooldownMs: config.dialogueCooldownMs, reason }),
+    );
+  }
+
+  private captureIsBlockedByCooldown(userId: string, captureStartedAt: number): boolean {
+    return captureBlockedByCooldown(
+      captureStartedAt,
+      this.globalDialogueCooldownUntil,
+      this.dialogueCooldownUntilByUser.get(userId) ?? 0,
+    );
   }
 
   private userHasActiveTurn(userId: string): boolean {

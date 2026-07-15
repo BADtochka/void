@@ -52,6 +52,8 @@ export const config = {
   hotwordCheckIntervalMs: positiveInteger("HOTWORD_CHECK_INTERVAL_MS", 650),
   hotwordMinAudioMs: positiveInteger("HOTWORD_MIN_AUDIO_MS", 600),
   hotwordTimeoutMs: positiveInteger("HOTWORD_TIMEOUT_MS", 5_000),
+  dialogueCooldownMs:
+    boundedFloat("DIALOGUE_COOLDOWN_SECONDS", 2, 0, 30) * 1_000,
   maxUtteranceSeconds: positiveInteger("MAX_UTTERANCE_SECONDS", 30),
   coreTimeoutMs: positiveInteger("VOICE_CORE_TIMEOUT_MS", 600_000),
 };

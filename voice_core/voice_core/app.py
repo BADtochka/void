@@ -61,6 +61,7 @@ store = ConversationStore(
     settings.stop_phrases,
     settings.followup_min_chars,
     settings.followup_ignore_phrases,
+    settings.dialogue_cooldown_seconds,
 )
 stt = SpeechToText(settings)
 hotword_detector = HotwordDetector(settings)
@@ -69,7 +70,27 @@ tts = TextToSpeech(settings)
 user_memory = UserMemoryStore(settings.user_memory_db_path)
 public_information = PublicInformationService()
 event_bus = VoiceEventBus()
-followups = FollowupTracker(event_bus)
+
+
+async def expire_dialogue(guild_id: str, channel_id: str, user_id: str) -> None:
+    store.finish(guild_id, user_id)
+    cancelled_recognition = await recognition_queue.cancel_speaker(guild_id, user_id)
+    cancelled_generation = await generation_queue.cancel_pending_speaker(
+        guild_id, user_id
+    )
+    logger.info(
+        "Conversation expired guild_id=%s channel_id=%s user_id=%s "
+        "cancelled_recognition=%s cancelled_generation=%s cooldown_seconds=%.1f",
+        guild_id,
+        channel_id,
+        user_id,
+        cancelled_recognition,
+        cancelled_generation,
+        settings.dialogue_cooldown_seconds,
+    )
+
+
+followups = FollowupTracker(event_bus, expire_dialogue)
 
 
 class UserDirectoryEntry(BaseModel):
@@ -234,7 +255,7 @@ async def stop_conversation(
     interrupt_active_generation: bool,
     farewell: str | None = None,
 ) -> tuple[int, int]:
-    store.stop(request.guild_id)
+    store.finish(request.guild_id)
     cancelled_recognition = await recognition_queue.cancel_guild(request.guild_id)
     if interrupt_active_generation:
         await generation_queue.cancel_guild(request.guild_id)
@@ -327,7 +348,9 @@ async def execute_assistant_tool(
                 raise ValueError("content is required for scope=selection")
             chat_deliveries.append(content)
         elif scope == "previous_response":
-            previous = store.last_assistant_message(request.guild_id)
+            previous = store.last_assistant_message(
+                request.guild_id, request.user_id
+            )
             if not previous:
                 raise ValueError("there is no previous assistant response")
             chat_deliveries.append(previous)
@@ -531,7 +554,7 @@ async def generate_turn(turn: PreparedTurn) -> bytes | None:
             "spoken_name": item.preferred_name
             or russianize_address_name(item.display_name),
         }
-        for item in store.participants(request.guild_id)
+        for item in store.participants(request.guild_id, request.user_id)
     ]
     web_search_allowed = request.user_is_admin or user_memory.has_web_search_access(
         request.guild_id, request.user_id
@@ -556,7 +579,7 @@ async def generate_turn(turn: PreparedTurn) -> bytes | None:
             accepted, web_search_allowed=web_search_allowed
         )
         answer = await llm.reply(
-            store.history(request.guild_id),
+            store.history(request.guild_id, request.user_id),
             prompt,
             assistant_tools,
             lambda name, arguments: execute_assistant_tool(
@@ -605,6 +628,7 @@ async def generate_turn(turn: PreparedTurn) -> bytes | None:
         request.guild_id,
         accepted,
         spoken_answer,
+        speaker_id=request.user_id,
         identity_key=participant.identity_key,
         speaker_name=speaker_name,
     )
@@ -690,7 +714,8 @@ async def voice_events(websocket: WebSocket) -> None:
 
 @app.delete("/v1/conversations/{guild_id}", status_code=204)
 async def reset_conversation(guild_id: str) -> Response:
-    store.reset(guild_id)
+    store.finish(guild_id)
+    await recognition_queue.cancel_guild(guild_id)
     await generation_queue.cancel_guild(guild_id)
     followups.stop_guild(guild_id)
     return Response(status_code=204)
@@ -711,7 +736,15 @@ async def start_followup_after_playback(
     user_id: str,
     x_channel_id: str = Header(),
 ) -> Response:
-    store.open_followup(guild_id, user_id)
+    if not store.open_followup(guild_id, user_id):
+        logger.info(
+            "Follow-up reopen ignored during dialogue cooldown guild_id=%s "
+            "channel_id=%s user_id=%s",
+            guild_id,
+            x_channel_id,
+            user_id,
+        )
+        return Response(status_code=204)
     followups.open(guild_id, x_channel_id, user_id, settings.followup_seconds)
     event_bus.publish(
         VoiceEvent(

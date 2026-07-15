@@ -6,7 +6,11 @@ from typing import Any
 
 from .dialogue import normalize_phrase, normalize_stop_request
 from .public_info import PUBLIC_INFO_TOOLS, WEB_SEARCH_TOOL
-from .user_memory import USER_MEMORY_TOOLS
+from .user_memory import (
+    USER_MEMORY_TOOLS,
+    requested_name_lookup,
+    requested_user_memory_tool,
+)
 
 DEFAULT_SYSTEM_PROMPT = (
     "Ты Омни — локальный голосовой собеседник в Discord. Отвечай по-русски, кратко и естественно. "
@@ -252,8 +256,13 @@ def select_assistant_tools(
 
 
 def required_tool_for_turn(text: str, *, web_search_allowed: bool) -> str | None:
-    """Never force a tool — the model decides. Kept for API compatibility."""
-    _ = (text, web_search_allowed)
+    """Force deterministic user-memory operations that must be scoped by user ID."""
+    _ = web_search_allowed
+    memory_tool = requested_user_memory_tool(text)
+    if memory_tool is not None:
+        return memory_tool
+    if requested_name_lookup(text):
+        return "lookup_user_name"
     return None
 
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
 from typing import Literal
 
@@ -14,6 +16,9 @@ VoiceEventType = Literal[
     "chat_message",
     "status_speech",
 ]
+
+logger = logging.getLogger("voice-core.followup")
+FollowupExpiredHandler = Callable[[str, str, str], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -56,8 +61,13 @@ class VoiceEventBus:
 
 
 class FollowupTracker:
-    def __init__(self, event_bus: VoiceEventBus) -> None:
+    def __init__(
+        self,
+        event_bus: VoiceEventBus,
+        on_expire: FollowupExpiredHandler | None = None,
+    ) -> None:
         self._event_bus = event_bus
+        self._on_expire = on_expire
         self._tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
 
     def open(self, guild_id: str, channel_id: str, user_id: str, seconds: float) -> None:
@@ -97,6 +107,15 @@ class FollowupTracker:
             if self._tasks.get(key) is not asyncio.current_task():
                 return
             self._tasks.pop(key, None)
+            if self._on_expire is not None:
+                try:
+                    await self._on_expire(key[0], channel_id, key[1])
+                except Exception:
+                    logger.exception(
+                        "Follow-up expiry cleanup failed guild_id=%s user_id=%s",
+                        key[0],
+                        key[1],
+                    )
             self._event_bus.publish(
                 VoiceEvent("followup_expired", key[0], channel_id, key[1])
             )

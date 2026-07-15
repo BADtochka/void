@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   captureAllowedForUser,
+  captureBlockedByCooldown,
   hotwordActionForCapture,
   userHasActiveTurn,
 } from "./voice-turn-state.js";
@@ -24,5 +25,12 @@ describe("voice turn ownership", () => {
     expect(hotwordActionForCapture(true, false)).toBe("interrupt");
     expect(hotwordActionForCapture(false, true)).toBe("interrupt");
     expect(hotwordActionForCapture(false, false)).toBe("activate");
+  });
+
+  test("captures queued before or during dialogue cooldown are blocked", () => {
+    expect(captureBlockedByCooldown(99, 100, 0)).toBe(true);
+    expect(captureBlockedByCooldown(101, 100, 0)).toBe(false);
+    expect(captureBlockedByCooldown(49, 0, 50)).toBe(true);
+    expect(captureBlockedByCooldown(51, 0, 50)).toBe(false);
   });
 });

@@ -24,3 +24,11 @@ export function hotwordActionForCapture(
 ): "activate" | "interrupt" {
   return wasActiveAtCaptureStart || isActiveNow ? "interrupt" : "activate";
 }
+
+export function captureBlockedByCooldown(
+  captureStartedAt: number,
+  globalCooldownUntil: number,
+  userCooldownUntil: number,
+): boolean {
+  return captureStartedAt <= Math.max(globalCooldownUntil, userCooldownUntil);
+}

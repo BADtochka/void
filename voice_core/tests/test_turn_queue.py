@@ -166,6 +166,37 @@ class RecognitionQueueTests(unittest.IsolatedAsyncioTestCase):
 
 
 class GenerationQueueTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cancel_pending_speaker_keeps_other_users_requests(self) -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+        processed: list[str] = []
+
+        async def processor(turn: PreparedTurn) -> bytes:
+            processed.append(turn.accepted_text)
+            if turn.accepted_text == "active":
+                started.set()
+                await release.wait()
+            return turn.accepted_text.encode()
+
+        queue = GenerationQueue(processor)
+        await queue.start()
+        try:
+            active = asyncio.create_task(queue.submit(prepared("blocker", "active", False)))
+            await started.wait()
+            stale = asyncio.create_task(queue.submit(prepared("expired", "stale", True)))
+            other = asyncio.create_task(queue.submit(prepared("other", "other", True)))
+            await asyncio.sleep(0)
+            cancelled = await queue.cancel_pending_speaker("guild", "expired")
+            release.set()
+            results = await asyncio.gather(active, stale, other)
+        finally:
+            await queue.stop()
+
+        self.assertEqual(cancelled, 1)
+        self.assertIsNone(results[1])
+        self.assertEqual(results[2], b"other")
+        self.assertNotIn("stale", processed)
+
     async def test_cancel_pending_guild_keeps_active_tool_generation_alive(self) -> None:
         started = asyncio.Event()
         release = asyncio.Event()
