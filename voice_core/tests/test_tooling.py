@@ -58,12 +58,12 @@ class ToolingTests(unittest.TestCase):
             },
         )
 
-    def test_select_tools_omits_search_web_when_denied(self) -> None:
+    def test_select_tools_always_includes_search_web(self) -> None:
         tools = select_assistant_tools("Как твои дела?", web_search_allowed=False)
         names = {
             str((tool.get("function") or {}).get("name") or "") for tool in tools
         }
-        self.assertNotIn("search_web", names)
+        self.assertIn("search_web", names)
         self.assertIn("end_conversation", names)
         self.assertIn("lookup_user_name", names)
         self.assertIn("get_current_weather", names)

@@ -444,6 +444,58 @@ class LanguageModelToolChoiceTests(unittest.IsolatedAsyncioTestCase):
             "Сейчас не могу ответить. Попробуй ещё раз.",
         )
 
+    async def test_denied_tool_returns_spoken_error_without_false_hope(self) -> None:
+        model = LanguageModel(Settings())
+        spoken: list[str] = []
+
+        async def fake_completion(_payload, _request_number):
+            return (
+                {
+                    "content": "Сейчас поищу в сети.",
+                    "reasoning_content": "",
+                    "tool_calls": [
+                        {
+                            "id": "search-1",
+                            "type": "function",
+                            "function": {
+                                "name": "search_web",
+                                "arguments": '{"query":"новости"}',
+                            },
+                        }
+                    ],
+                },
+                "tool_calls",
+            )
+
+        async def tool_handler(_name, _arguments):
+            return ToolResult(
+                '{"ok":false,"denied":true}',
+                terminate=True,
+                response="Поиск в сети тебе недоступен. Его могут включить администраторы сервера.",
+            )
+
+        async def collect_status(text: str) -> None:
+            spoken.append(text)
+
+        model._stream_completion = fake_completion
+        try:
+            answer = await model.reply(
+                [],
+                "найди новости",
+                USER_MEMORY_TOOLS,
+                tool_handler,
+                on_status_speech=collect_status,
+                blocked_status_tools=frozenset({"search_web"}),
+            )
+        finally:
+            await model.close()
+
+        self.assertEqual(
+            answer,
+            "Поиск в сети тебе недоступен. Его могут включить администраторы сервера.",
+        )
+        self.assertEqual(spoken, [])
+
 
 class SpeechToTextTests(unittest.TestCase):
     def test_leading_silence_and_initial_prompt_are_passed_to_whisper(self) -> None:

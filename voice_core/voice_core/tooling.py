@@ -38,7 +38,14 @@ TOOL_STATUS_SPEECH: dict[str, str] = {
     "end_conversation": "Хорошо, на связи.",
 }
 
+TOOL_DENIED_SPEECH: dict[str, str] = {
+    "search_web": (
+        "Поиск в сети тебе недоступен. Его могут включить администраторы сервера."
+    ),
+}
+
 END_CONVERSATION_FAREWELL = "Хорошо, на связи."
+WEB_SEARCH_DENIED_SPEECH = TOOL_DENIED_SPEECH["search_web"]
 
 END_CONVERSATION_TOOL: dict[str, object] = {
     "type": "function",
@@ -175,22 +182,27 @@ def tool_status_speech(tool_name: str) -> str | None:
     return message.strip() if message else None
 
 
+def tool_denied_speech(tool_name: str) -> str:
+    return TOOL_DENIED_SPEECH.get(
+        tool_name,
+        "Эта возможность тебе сейчас недоступна.",
+    )
+
+
 def select_assistant_tools(
     text: str,
     *,
     web_search_allowed: bool,
 ) -> list[dict[str, object]]:
     """Return the full tool catalog; the model chooses what to call."""
-    _ = text
-    tools: list[dict[str, object]] = [
+    _ = (text, web_search_allowed)
+    return [
         *USER_MEMORY_TOOLS,
         *PUBLIC_INFO_TOOLS,
+        WEB_SEARCH_TOOL,
         SEND_MESSAGE_TO_CHAT_TOOL,
         END_CONVERSATION_TOOL,
     ]
-    if web_search_allowed:
-        tools.append(WEB_SEARCH_TOOL)
-    return tools
 
 
 def required_tool_for_turn(text: str, *, web_search_allowed: bool) -> str | None:
@@ -207,6 +219,15 @@ def build_turn_prompt(
     accepted_text: str,
     web_search_allowed: bool,
 ) -> str:
+    web_search_line = (
+        "web_search=allowed"
+        if web_search_allowed
+        else (
+            "web_search=denied — поиск в сети этому пользователю закрыт. "
+            "Если просят искать, вызови search_web или прямо скажи, что доступ закрыт. "
+            "Не обещай, что сейчас поищешь."
+        )
+    )
     return (
         "[Контекст участников. Не цитируй identity_key.]\n"
         f"participants={json.dumps(roster, ensure_ascii=False)}\n"
@@ -214,6 +235,6 @@ def build_turn_prompt(
         f"current_name={json.dumps(speaker_name, ensure_ascii=False)}\n"
         "Отвечай только current_identity. Его «я/меня/мне» не переноси на других. "
         "current_name уже известно — обращайся так; не подменяй чужим именем из roster.\n"
-        f"web_search={'allowed' if web_search_allowed else 'denied'}\n"
+        f"{web_search_line}\n"
         f"[Реплика]\n{accepted_text}"
     )

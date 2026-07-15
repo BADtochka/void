@@ -300,12 +300,21 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
             async def reply(self, *_args, **_kwargs):
                 raise AssertionError("LM Studio must not receive a denied web search")
 
+        class CapturingTextToSpeech:
+            def __init__(self):
+                self.text = None
+
+            async def synthesize(self, text, _guild_id):
+                self.text = text
+                return np.zeros(100, dtype=np.float32), 16_000
+
         guild_id = "denied-web-search-test"
         request = TurnRequest(b"", guild_id, "channel", "user", "User")
+        tts = CapturingTextToSpeech()
         try:
             with (
                 patch.object(app_module, "llm", ForbiddenLanguageModel()),
-                patch.object(app_module, "tts", _FakeTextToSpeech()),
+                patch.object(app_module, "tts", tts),
                 patch.object(app_module, "user_memory", _FakeUserMemory()),
             ):
                 reply = await app_module.generate_turn(
@@ -318,6 +327,7 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertIsNotNone(reply)
+            self.assertEqual(tts.text, app_module.WEB_SEARCH_DENIED_SPEECH)
         finally:
             app_module.followups.stop_guild(guild_id)
             app_module.store.reset(guild_id)
@@ -338,13 +348,15 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(app_module, "user_memory", memory),
                 patch.object(app_module, "public_information", public_information),
             ):
-                with self.assertRaises(PermissionError):
-                    await app_module.execute_assistant_tool(
-                        request,
-                        "поищи в сети",
-                        "search_web",
-                        {"query": "тест"},
-                    )
+                denied = await app_module.execute_assistant_tool(
+                    request,
+                    "поищи в сети",
+                    "search_web",
+                    {"query": "тест"},
+                )
+                self.assertIsInstance(denied, ToolResult)
+                self.assertTrue(denied.terminate)
+                self.assertEqual(denied.response, app_module.WEB_SEARCH_DENIED_SPEECH)
                 memory.grant_web_search_access("guild", "user", "User")
                 result = await app_module.execute_assistant_tool(
                     request,

@@ -19,7 +19,7 @@ from .config import Settings
 from .audio_effects import apply_robotic_voice_effect
 from .dialogue import normalize_phrase, trim_truncated_completion
 from .speech_normalization import normalize_russian_tts_text
-from .tooling import tool_status_speech
+from .tooling import tool_denied_speech, tool_status_speech
 from .whisper_models import resolve_model
 from .windows_dlls import configure_windows_cuda_dlls
 
@@ -407,6 +407,7 @@ class LanguageModel:
         image_data: bytes | None = None,
         image_content_type: str | None = None,
         on_status_speech: StatusSpeechHandler | None = None,
+        blocked_status_tools: frozenset[str] | None = None,
     ) -> str:
         user_content: str | list[dict[str, object]] = user_text
         if image_data and image_content_type:
@@ -429,6 +430,7 @@ class LanguageModel:
         tool_rounds = 0
         request_number = 0
         tools_disabled_after_error = False
+        status_blocked = blocked_status_tools or frozenset()
         while True:
             request_number += 1
             payload: dict[str, Any] = {
@@ -547,7 +549,19 @@ class LanguageModel:
                     == "end_conversation"
                     for tool_call in tool_calls
                 )
-                if model_status and on_status_speech is not None and not ending_only:
+                tool_names_this_round = {
+                    str((tool_call.get("function") or {}).get("name") or "")
+                    for tool_call in tool_calls
+                }
+                skip_status_for_denied_tools = bool(tool_names_this_round) and (
+                    tool_names_this_round <= status_blocked
+                )
+                if (
+                    model_status
+                    and on_status_speech is not None
+                    and not ending_only
+                    and not skip_status_for_denied_tools
+                ):
                     await on_status_speech(model_status)
                     announced_model_status = True
                 for tool_call in tool_calls:
@@ -558,6 +572,7 @@ class LanguageModel:
                         and not announced_model_status
                         and tool_name
                         and tool_name != "end_conversation"
+                        and tool_name not in status_blocked
                     ):
                         announcement = tool_status_speech(tool_name)
                         if announcement:
@@ -574,6 +589,10 @@ class LanguageModel:
                         ):
                             arguments = {**arguments, "farewell": model_status}
                         raw_tool_result = await tool_handler(tool_name, arguments)
+                    except PermissionError as error:
+                        logger.warning("Tool %s denied: %s", tool_name, error)
+                        denial = tool_denied_speech(tool_name)
+                        return denial
                     except Exception as error:
                         logger.warning("Tool %s failed: %s", tool_name, error)
                         tool_result = json.dumps({"ok": False, "error": str(error)})

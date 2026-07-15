@@ -28,6 +28,7 @@ from .tooling import (  # noqa: E402
     END_CONVERSATION_FAREWELL,
     END_CONVERSATION_TOOL,
     SEND_MESSAGE_TO_CHAT_TOOL,
+    WEB_SEARCH_DENIED_SPEECH,
     build_turn_prompt,
     requested_chat_delivery,
     required_tool_for_turn,
@@ -351,7 +352,23 @@ async def execute_assistant_tool(
             request.user_is_admin
             or user_memory.has_web_search_access(request.guild_id, request.user_id)
         ):
-            raise PermissionError("web search is not allowed for the current user")
+            logger.info(
+                "Web search denied via tool guild_id=%s user_id=%s",
+                request.guild_id,
+                request.user_id,
+            )
+            return ToolResult(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "denied": True,
+                        "error": "web search is not allowed for the current user",
+                    },
+                    ensure_ascii=False,
+                ),
+                terminate=True,
+                response=WEB_SEARCH_DENIED_SPEECH,
+            )
         return await public_information.execute(tool_name, arguments)
     if tool_name in {"get_current_weather", "lookup_topic", "get_random_joke"}:
         return await public_information.execute(tool_name, arguments)
@@ -525,10 +542,7 @@ async def generate_turn(turn: PreparedTurn) -> bytes | None:
     )
     chat_deliveries: list[str | None] = []
     if requested_web_search(accepted) and not web_search_allowed:
-        answer = (
-            "Поиск в сети доступен только администраторам сервера и пользователям "
-            "из списка доступа."
-        )
+        answer = WEB_SEARCH_DENIED_SPEECH
         logger.info(
             "Web search denied guild_id=%s user_id=%s",
             request.guild_id,
@@ -551,6 +565,9 @@ async def generate_turn(turn: PreparedTurn) -> bytes | None:
             image_data=request.image_data or None,
             image_content_type=request.image_content_type or None,
             on_status_speech=lambda text: publish_status_speech(request, text),
+            blocked_status_tools=(
+                frozenset({"search_web"}) if not web_search_allowed else frozenset()
+            ),
         )
     spoken_answer = prepare_for_speech(answer)
     if not spoken_answer:
