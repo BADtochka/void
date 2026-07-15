@@ -14,8 +14,9 @@ class ToolingTests(unittest.TestCase):
     def test_system_prompt_stays_persona_focused(self) -> None:
         self.assertIn("Омни", DEFAULT_SYSTEM_PROMPT)
         self.assertIn("current_identity", DEFAULT_SYSTEM_PROMPT)
+        self.assertIn("не пиши в тексте имена инструментов", DEFAULT_SYSTEM_PROMPT.casefold())
         self.assertNotIn("get_current_weather", DEFAULT_SYSTEM_PROMPT)
-        self.assertLess(len(DEFAULT_SYSTEM_PROMPT), 1_200)
+        self.assertLess(len(DEFAULT_SYSTEM_PROMPT), 1_400)
 
     def test_end_conversation_detection_covers_free_form(self) -> None:
         self.assertTrue(requested_end_conversation("давай на этом закончим"))

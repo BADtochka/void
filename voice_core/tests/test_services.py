@@ -172,6 +172,28 @@ class LanguageModelToolChoiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(answer, "В Москве ясно.")
         self.assertEqual(spoken, ["Секунду, смотрю погоду."])
 
+    async def test_length_finish_reason_trims_looped_tail(self) -> None:
+        model = LanguageModel(Settings())
+        looped = (
+            "Знаю, босс. Идём дальше? 🚀 endconversation — Прощание: Прощай. "
+            '(Если нужно — напиши "Продолжить" — я подожду.) '
+            '(Если нужно — напиши "Продолжить" — я подожду.)'
+        )
+
+        async def fake_completion(_payload, _request_number):
+            return (
+                {"content": looped, "reasoning_content": "", "tool_calls": []},
+                "length",
+            )
+
+        model._stream_completion = fake_completion
+        try:
+            answer = await model.reply([], "продолжим")
+        finally:
+            await model.close()
+
+        self.assertEqual(answer, "Знаю, босс. Идём дальше?")
+
     async def test_terminal_tool_can_supply_backend_response(self) -> None:
         model = LanguageModel(Settings())
         payloads = []

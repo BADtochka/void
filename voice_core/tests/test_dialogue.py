@@ -1,6 +1,6 @@
 import unittest
 
-from voice_core.dialogue import ConversationStore, prepare_for_speech
+from voice_core.dialogue import ConversationStore, prepare_for_speech, trim_truncated_completion
 
 
 class ConversationStoreTests(unittest.TestCase):
@@ -354,6 +354,23 @@ class ConversationStoreTests(unittest.TestCase):
             prepare_for_speech("<analysis>служебный текст</analysis>Продолжаем."),
             "Продолжаем.",
         )
+
+    def test_emojis_tool_names_and_ui_junk_are_removed_before_speech(self) -> None:
+        artifact = (
+            "Знаю, босс. Уже зовут тебя так. Идём дальше? 🚀 endconversation — Прощание: "
+            "Прощай, босс. До встречи! 🌟 (Нажми endconversation, если хочешь завершить.) "
+            '(Если нужно — напиши "Продолжить" — я подожду.) '
+            "(Если не нужно — просто уйду. 🙏) "
+            '(Если нужно — напиши "Продолжить" — я подожду.)'
+        )
+        self.assertEqual(
+            prepare_for_speech(artifact),
+            "Знаю, босс. Уже зовут тебя так. Идём дальше?",
+        )
+
+    def test_trim_truncated_completion_limits_sentences(self) -> None:
+        text = "Первое. Второе. Третье. Четвёртое."
+        self.assertEqual(trim_truncated_completion(text, max_sentences=2), "Первое. Второе.")
 
 
 if __name__ == "__main__":

@@ -306,6 +306,78 @@ class ConversationStore:
         self._items.pop(key, None)
 
 
+_EMOJI_PATTERN = re.compile(
+    "["
+    "\U0001F300-\U0001FAFF"
+    "\U00002600-\U000027BF"
+    "\U0001F600-\U0001F64F"
+    "\U000024C2-\U0001F251"
+    "\U00002700-\U000027BF"
+    "\U0000FE00-\U0000FE0F"
+    "\U0000200D"
+    "]+",
+    flags=re.UNICODE,
+)
+
+_TOOL_HALLUCINATION_PATTERN = re.compile(
+    r"\b(?:"
+    r"end[_\s-]?conversation|"
+    r"lookup[_\s-]?user[_\s-]?name|"
+    r"remember[_\s-]?preferred[_\s-]?name|"
+    r"forget[_\s-]?preferred[_\s-]?name|"
+    r"send[_\s-]?message[_\s-]?to[_\s-]?chat|"
+    r"get[_\s-]?current[_\s-]?weather|"
+    r"lookup[_\s-]?topic|"
+    r"get[_\s-]?random[_\s-]?joke|"
+    r"search[_\s-]?web"
+    r")\b",
+    flags=re.IGNORECASE,
+)
+
+_UI_INSTRUCTION_PATTERN = re.compile(
+    r"\([^)]*(?:нажми|напиши|продолжить|end[_\s-]?conversation)[^)]*\)",
+    flags=re.IGNORECASE,
+)
+
+_SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[.!?…])\s+")
+
+
+def _cut_at_tool_hallucination(text: str) -> str:
+    match = _TOOL_HALLUCINATION_PATTERN.search(text)
+    if match and match.start() > 0:
+        return text[: match.start()].rstrip(" ,;:—-")
+    return text
+
+
+def _trim_repeated_parentheticals(text: str) -> str:
+    for match in re.finditer(r"\([^)]{8,}\)", text):
+        fragment = match.group(0)
+        first = text.find(fragment)
+        if first == -1:
+            continue
+        second = text.find(fragment, first + len(fragment))
+        if second != -1:
+            return text[:first].rstrip(" ,;:—-")
+    return text
+
+
+def trim_truncated_completion(text: str, *, max_sentences: int = 3) -> str:
+    """Drop loops and tool/UI junk common when the model hits max_tokens."""
+    cleaned = _trim_repeated_parentheticals(text.strip())
+    cleaned = _cut_at_tool_hallucination(cleaned)
+    cleaned = _EMOJI_PATTERN.sub("", cleaned)
+    sentences = [
+        sentence.strip()
+        for sentence in _SENTENCE_SPLIT_PATTERN.split(cleaned)
+        if sentence.strip()
+    ]
+    if len(sentences) > max_sentences:
+        cleaned = " ".join(sentences[:max_sentences])
+    else:
+        cleaned = " ".join(sentences)
+    return cleaned.strip()
+
+
 def prepare_for_speech(text: str, limit: int = 1_200) -> str:
     text = re.sub(
         r"<(?:think|reasoning|analysis)\b[^>]*>.*?</(?:think|reasoning|analysis)\s*>",
@@ -348,6 +420,9 @@ def prepare_for_speech(text: str, limit: int = 1_200) -> str:
         text,
         flags=re.IGNORECASE,
     )
+    text = _EMOJI_PATTERN.sub("", text)
+    text = _UI_INSTRUCTION_PATTERN.sub(" ", text)
+    text = trim_truncated_completion(text)
     text = re.sub(r"\s+", " ", text).strip()
     if len(text) <= limit:
         return text

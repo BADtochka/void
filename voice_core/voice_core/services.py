@@ -17,7 +17,7 @@ import numpy as np
 
 from .config import Settings
 from .audio_effects import apply_robotic_voice_effect
-from .dialogue import normalize_phrase
+from .dialogue import normalize_phrase, trim_truncated_completion
 from .speech_normalization import normalize_russian_tts_text
 from .tooling import tool_status_speech
 from .whisper_models import resolve_model
@@ -527,6 +527,15 @@ class LanguageModel:
                 continue
 
             if content:
+                if finish_reason == "length":
+                    trimmed = trim_truncated_completion(content)
+                    if trimmed:
+                        logger.warning(
+                            "LM Studio hit max_tokens; trimmed spoken answer from %s to %s chars",
+                            len(content),
+                            len(trimmed),
+                        )
+                        content = trimmed
                 return content
 
             if empty_retries == 0:
