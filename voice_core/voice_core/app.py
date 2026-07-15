@@ -44,6 +44,7 @@ from .user_memory import (  # noqa: E402
     UserMemoryStore,
     name_lookup_is_about_current_user,
     name_lookup_other_subject,
+    requested_name_lookup,
     requested_preferred_name,
     requested_preferred_name_forget,
 )
@@ -476,6 +477,38 @@ async def publish_status_speech(
     )
 
 
+async def direct_name_lookup_answer(
+    request: TurnRequest,
+    accepted: str,
+    chat_deliveries: list[str | None],
+) -> str | None:
+    """Answer name questions locally when the small model writes fake tool calls."""
+    if not requested_name_lookup(accepted):
+        return None
+
+    arguments: dict[str, object] = {}
+    if name_lookup_is_about_current_user(accepted):
+        arguments["subject"] = "current_user"
+    else:
+        subject = name_lookup_other_subject(accepted)
+        if not subject:
+            return None
+        arguments["subject"] = subject
+
+    result = await execute_assistant_tool(
+        request, accepted, "lookup_user_name", arguments, chat_deliveries
+    )
+    if isinstance(result, ToolResult) and result.response:
+        logger.info(
+            "Name lookup answered directly guild_id=%s user_id=%s subject=%r",
+            request.guild_id,
+            request.user_id,
+            arguments.get("subject"),
+        )
+        return result.response
+    return None
+
+
 async def generate_turn(turn: PreparedTurn) -> bytes | None:
     request = turn.request
     accepted = turn.accepted_text
@@ -534,23 +567,25 @@ async def generate_turn(turn: PreparedTurn) -> bytes | None:
             request.user_id,
         )
     else:
-        assistant_tools = select_assistant_tools(
-            accepted, web_search_allowed=web_search_allowed
-        )
-        answer = await llm.reply(
-            store.history(request.guild_id),
-            prompt,
-            assistant_tools,
-            lambda name, arguments: execute_assistant_tool(
-                request, accepted, name, arguments, chat_deliveries
-            ),
-            required_tool_name=required_tool_for_turn(
+        answer = await direct_name_lookup_answer(request, accepted, chat_deliveries)
+        if answer is None:
+            assistant_tools = select_assistant_tools(
                 accepted, web_search_allowed=web_search_allowed
-            ),
-            image_data=request.image_data or None,
-            image_content_type=request.image_content_type or None,
-            on_status_speech=lambda text: publish_status_speech(request, text),
-        )
+            )
+            answer = await llm.reply(
+                store.history(request.guild_id),
+                prompt,
+                assistant_tools,
+                lambda name, arguments: execute_assistant_tool(
+                    request, accepted, name, arguments, chat_deliveries
+                ),
+                required_tool_name=required_tool_for_turn(
+                    accepted, web_search_allowed=web_search_allowed
+                ),
+                image_data=request.image_data or None,
+                image_content_type=request.image_content_type or None,
+                on_status_speech=lambda text: publish_status_speech(request, text),
+            )
     spoken_answer = prepare_for_speech(answer)
     if not spoken_answer:
         return None

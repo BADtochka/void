@@ -372,6 +372,19 @@ class ConversationStoreTests(unittest.TestCase):
         text = "Первое. Второе. Третье. Четвёртое."
         self.assertEqual(trim_truncated_completion(text, max_sentences=2), "Первое. Второе.")
 
+    def test_glued_tool_hallucinations_are_stripped(self) -> None:
+        artifact = (
+            'lookupusername(subject="Пупсик") rememberpreferredname, preferredname="Пупсик" '
+            'sendmessagetochat(to=" .formallybad", message="Вы зовутся Пупсик") endconversation()'
+        )
+        self.assertEqual(prepare_for_speech(artifact), "")
+        self.assertEqual(
+            prepare_for_speech(
+                "Знаю. lookupusername(subject='тест') больше не нужно."
+            ),
+            "Знаю.",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

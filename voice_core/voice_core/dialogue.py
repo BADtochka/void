@@ -321,15 +321,16 @@ _EMOJI_PATTERN = re.compile(
 
 _TOOL_HALLUCINATION_PATTERN = re.compile(
     r"\b(?:"
-    r"end[_\s-]?conversation|"
-    r"lookup[_\s-]?user[_\s-]?name|"
-    r"remember[_\s-]?preferred[_\s-]?name|"
-    r"forget[_\s-]?preferred[_\s-]?name|"
-    r"send[_\s-]?message[_\s-]?to[_\s-]?chat|"
-    r"get[_\s-]?current[_\s-]?weather|"
-    r"lookup[_\s-]?topic|"
-    r"get[_\s-]?random[_\s-]?joke|"
-    r"search[_\s-]?web"
+    r"end[_\s-]?conversation|endconversation|"
+    r"lookup[_\s-]?user[_\s-]?name|lookupusername|"
+    r"remember[_\s-]?preferred[_\s-]?name|rememberpreferredname|"
+    r"forget[_\s-]?preferred[_\s-]?name|forgetpreferredname|"
+    r"send[_\s-]?message[_\s-]?to[_\s-]?chat|sendmessagetochat|"
+    r"get[_\s-]?current[_\s-]?weather|getcurrentweather|"
+    r"lookup[_\s-]?topic|lookuptopic|"
+    r"get[_\s-]?random[_\s-]?joke|getrandomjoke|"
+    r"search[_\s-]?web|searchweb|"
+    r"rememberwebsearch|rememberallowed"
     r")\b",
     flags=re.IGNORECASE,
 )
@@ -344,9 +345,11 @@ _SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[.!?…])\s+")
 
 def _cut_at_tool_hallucination(text: str) -> str:
     match = _TOOL_HALLUCINATION_PATTERN.search(text)
-    if match and match.start() > 0:
-        return text[: match.start()].rstrip(" ,;:—-")
-    return text
+    if not match:
+        return text
+    if match.start() == 0:
+        return ""
+    return text[: match.start()].rstrip(" ,;:—-")
 
 
 def _trim_repeated_parentheticals(text: str) -> str:
