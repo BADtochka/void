@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import sys
 import tempfile
 import threading
@@ -320,10 +321,92 @@ class LanguageModelToolChoiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(messages[1]["content"], "старый текст")
         current_content = messages[-1]["content"]
         self.assertEqual(current_content[0], {"type": "text", "text": "Что здесь?"})
-        self.assertTrue(
-            current_content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+        encoded = base64.b64encode(b"image-bytes").decode("ascii")
+        self.assertEqual(current_content[1]["image_url"]["url"], encoded)
+        self.assertFalse(
+            current_content[1]["image_url"]["url"].startswith("data:image/")
         )
 
+    async def test_vision_image_format_is_retried_on_lmstudio_error(self) -> None:
+        model = LanguageModel(Settings())
+        image_urls: list[str] = []
+
+        async def fake_completion(payload, request_number):
+            image_urls.append(
+                str(payload["messages"][-1]["content"][1]["image_url"]["url"])
+            )
+            if request_number == 1:
+                request = httpx.Request("POST", "http://127.0.0.1:1234/v1/chat/completions")
+                response = httpx.Response(
+                    400,
+                    request=request,
+                    text='{"error":"\'url\' field must be a base64 encoded image."}',
+                )
+                raise httpx.HTTPStatusError(
+                    "Client error '400 Bad Request'",
+                    request=request,
+                    response=response,
+                )
+            return (
+                {
+                    "content": "На картинке кот.",
+                    "reasoning_content": "",
+                    "tool_calls": [],
+                },
+                "stop",
+            )
+
+        model._stream_completion = fake_completion
+        try:
+            answer = await model.reply(
+                [],
+                "Что на картинке?",
+                image_data=b"image-bytes",
+                image_content_type="image/png",
+            )
+        finally:
+            await model.close()
+
+        self.assertEqual(answer, "На картинке кот.")
+        self.assertEqual(len(image_urls), 2)
+        self.assertFalse(image_urls[0].startswith("data:image/"))
+        self.assertTrue(image_urls[1].startswith("data:image/png;base64,"))
+
+    async def test_vision_image_error_does_not_strip_tools(self) -> None:
+        model = LanguageModel(Settings())
+        requests_with_tools: list[bool] = []
+
+        async def fake_completion(payload, request_number):
+            requests_with_tools.append("tools" in payload)
+            request = httpx.Request("POST", "http://127.0.0.1:1234/v1/chat/completions")
+            response = httpx.Response(
+                400,
+                request=request,
+                text='{"error":"\'url\' field must be a base64 encoded image."}',
+            )
+            raise httpx.HTTPStatusError(
+                "Client error '400 Bad Request'",
+                request=request,
+                response=response,
+            )
+
+        model._stream_completion = fake_completion
+        try:
+            answer = await model.reply(
+                [],
+                "Что на картинке?",
+                USER_MEMORY_TOOLS,
+                None,
+                image_data=b"image-bytes",
+                image_content_type="image/png",
+            )
+        finally:
+            await model.close()
+
+        self.assertEqual(
+            answer, "Не удалось разобрать изображение. Пришли картинку ещё раз."
+        )
+        self.assertEqual(requests_with_tools, [True, True])
     async def test_required_tool_is_forced_only_before_its_result(self) -> None:
         model = LanguageModel(Settings())
         payloads: list[dict[str, object]] = []

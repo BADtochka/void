@@ -29,12 +29,67 @@ _SILERO_SENTENCE_PATTERN = re.compile(r"\S(?:.*?\S)?(?:[.!?]+(?=\s|$)|$)")
 _MAX_TOOL_ROUNDS = 3
 _TOOL_LIMIT_FALLBACK = "Сейчас не получается проверить это. Скажи ещё раз чуть проще."
 _LM_REQUEST_FALLBACK = "Сейчас не могу ответить. Попробуй ещё раз."
+_VISION_IMAGE_FALLBACK = "Не удалось разобрать изображение. Пришли картинку ещё раз."
 _INCOMPLETE_TOOL_NUDGE = (
     "Ты пообещал посмотреть или найти информацию, но не вызвал инструмент. "
     "Сейчас обязательно сделай tool call (например search_web или lookup_topic). "
     "Не отвечай обычным текстом до результата инструмента."
 )
 _INCOMPLETE_TOOL_FALLBACK = "Не удалось это проверить. Скажи ещё раз."
+
+
+def _vision_image_url(encoded_image: str, content_type: str, *, style: str) -> str:
+    """Build image_url.url for vision models.
+
+    LM Studio rejects OpenAI-style data URIs and expects raw base64 in `url`.
+    Keep data_uri as a fallback for other OpenAI-compatible servers.
+    """
+    if style == "data_uri":
+        return f"data:{content_type};base64,{encoded_image}"
+    return encoded_image
+
+
+def _build_vision_user_content(
+    user_text: str,
+    encoded_image: str,
+    content_type: str,
+    *,
+    style: str,
+) -> list[dict[str, object]]:
+    return [
+        {"type": "text", "text": user_text},
+        {
+            "type": "image_url",
+            "image_url": {
+                "url": _vision_image_url(encoded_image, content_type, style=style)
+            },
+        },
+    ]
+
+
+def _http_error_text(error: httpx.HTTPStatusError) -> str:
+    response = error.response
+    if response is None:
+        return ""
+    try:
+        return response.text or ""
+    except Exception:
+        return ""
+
+
+def _is_vision_image_error(error_text: str) -> bool:
+    lowered = error_text.casefold()
+    return any(
+        marker in lowered
+        for marker in (
+            "base64 encoded image",
+            "'url' field must be",
+            "image_url",
+        )
+    ) or (
+        "base64" in lowered
+        and any(marker in lowered for marker in ("image", "url"))
+    )
 
 
 def _silero_sentences(text: str) -> list[str]:
@@ -356,10 +411,17 @@ class LanguageModel:
                         request_number,
                         body[:1_000],
                     )
+                    # Rebuild a non-streaming response so callers can read body after aread().
+                    error_response = httpx.Response(
+                        response.status_code,
+                        request=response.request,
+                        content=body.encode("utf-8"),
+                        headers=response.headers,
+                    )
                     raise httpx.HTTPStatusError(
                         f"Client error '{response.status_code}' for url '{response.url}'",
                         request=response.request,
-                        response=response,
+                        response=error_response,
                     )
                 async for line in response.aiter_lines():
                     if not line.startswith("data:"):
@@ -416,17 +478,16 @@ class LanguageModel:
         blocked_status_tools: frozenset[str] | None = None,
     ) -> str:
         user_content: str | list[dict[str, object]] = user_text
+        encoded_image: str | None = None
+        image_url_style = "raw"
         if image_data and image_content_type:
             encoded_image = base64.b64encode(image_data).decode("ascii")
-            user_content = [
-                {"type": "text", "text": user_text},
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:{image_content_type};base64,{encoded_image}"
-                    },
-                },
-            ]
+            user_content = _build_vision_user_content(
+                user_text,
+                encoded_image,
+                image_content_type,
+                style=image_url_style,
+            )
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self._settings.system_prompt},
             *history,
@@ -436,6 +497,7 @@ class LanguageModel:
         tool_rounds = 0
         request_number = 0
         tools_disabled_after_error = False
+        image_format_retried = False
         incomplete_promise_retries = 0
         progress_already_announced = False
         status_blocked = blocked_status_tools or frozenset()
@@ -476,11 +538,38 @@ class LanguageModel:
                 )
             except httpx.HTTPStatusError as error:
                 status = error.response.status_code if error.response is not None else None
+                error_text = _http_error_text(error)
+                if (
+                    status == 400
+                    and encoded_image is not None
+                    and image_content_type
+                    and not image_format_retried
+                    and _is_vision_image_error(error_text)
+                ):
+                    image_format_retried = True
+                    image_url_style = (
+                        "data_uri" if image_url_style == "raw" else "raw"
+                    )
+                    logger.warning(
+                        "LM Studio rejected vision image format; retrying with style=%s",
+                        image_url_style,
+                    )
+                    messages[-1] = {
+                        "role": "user",
+                        "content": _build_vision_user_content(
+                            user_text,
+                            encoded_image,
+                            image_content_type,
+                            style=image_url_style,
+                        ),
+                    }
+                    continue
                 if (
                     status == 400
                     and tools
                     and not tools_disabled_after_error
                     and "tools" in payload
+                    and not _is_vision_image_error(error_text)
                 ):
                     logger.warning(
                         "LM Studio rejected tools payload; retrying without tools"
@@ -493,6 +582,8 @@ class LanguageModel:
                     "LM Studio chat completions failed status=%s",
                     status,
                 )
+                if encoded_image is not None and _is_vision_image_error(error_text):
+                    return _VISION_IMAGE_FALLBACK
                 return _LM_REQUEST_FALLBACK
             except httpx.HTTPError:
                 logger.exception("LM Studio chat completions request failed")
