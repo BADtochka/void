@@ -721,11 +721,39 @@ class HotwordDetectorConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(started_count, detector._parallelism)
         self.assertIsNone(busy_result)
 
-    async def test_partial_check_yields_to_waiting_final_check(self) -> None:
+    async def test_partial_checks_run_in_parallel_across_free_slots(self) -> None:
+        started = threading.Event()
+        release = threading.Event()
+        counter_lock = threading.Lock()
+        started_count = 0
+        detector = HotwordDetector(Settings())
+
+        def blocking_detect(_audio):
+            nonlocal started_count
+            with counter_lock:
+                started_count += 1
+                if started_count == 2:
+                    started.set()
+            release.wait(timeout=2)
+            return False, "partial"
+
+        detector._detect_sync = blocking_detect
+        first = asyncio.create_task(detector.try_detect(np.ones(160, dtype=np.float32)))
+        second = asyncio.create_task(detector.try_detect(np.ones(160, dtype=np.float32)))
+        await asyncio.to_thread(started.wait, 2)
+        try:
+            self.assertEqual(started_count, 2)
+        finally:
+            release.set()
+            results = await asyncio.gather(first, second)
+
+        self.assertEqual(results, [(False, "partial"), (False, "partial")])
+
+    async def test_partial_check_is_busy_when_all_slots_are_taken(self) -> None:
         detector = HotwordDetector(Settings())
         detector._detect_sync = lambda _audio: (False, "")
-        await detector._slots.acquire()
-        await detector._slots.acquire()
+        for _ in range(detector._parallelism):
+            await detector._slots.acquire()
         waiting = asyncio.create_task(
             detector.detect(np.ones(160, dtype=np.float32))
         )
@@ -735,8 +763,8 @@ class HotwordDetectorConcurrencyTests(unittest.IsolatedAsyncioTestCase):
                 await detector.try_detect(np.ones(160, dtype=np.float32))
             )
         finally:
-            detector._slots.release()
-            detector._slots.release()
+            for _ in range(detector._parallelism):
+                detector._slots.release()
             await waiting
 
     async def test_cancelled_requests_hold_slots_until_native_inference_finishes(self) -> None:

@@ -211,6 +211,8 @@ class GenerationQueueTests(unittest.IsolatedAsyncioTestCase):
         try:
             active = asyncio.create_task(queue.submit(prepared("one", "active", False)))
             await started.wait()
+            # Same-speaker follow-ups while generating are dropped so they can't
+            # chase the still-running answer with another LM turn.
             old = asyncio.create_task(queue.submit(prepared("one", "old", False)))
             latest = asyncio.create_task(queue.submit(prepared("one", "latest", False)))
             wake = asyncio.create_task(queue.submit(prepared("two", "wake", True)))
@@ -222,8 +224,35 @@ class GenerationQueueTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(order, ["active", "wake"])
         self.assertEqual(results, [None, None, None, b"wake"])
-        self.assertEqual(queue.stats()["generation_coalesced"], 2)
         self.assertEqual(queue.stats()["generation_interrupted"], 1)
+
+    async def test_followup_from_same_speaker_is_dropped_while_generating(self) -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def processor(turn: PreparedTurn) -> bytes:
+            if turn.accepted_text == "active":
+                started.set()
+                await release.wait()
+            return turn.accepted_text.encode()
+
+        queue = GenerationQueue(processor)
+        await queue.start()
+        try:
+            active = asyncio.create_task(queue.submit(prepared("one", "active", False)))
+            await started.wait()
+            followup = asyncio.create_task(
+                queue.submit(prepared("one", "и где ответ", False))
+            )
+            await asyncio.sleep(0)
+            self.assertTrue(followup.done())
+            self.assertIsNone(followup.result())
+            release.set()
+            result = await active
+        finally:
+            await queue.stop()
+
+        self.assertEqual(result, b"active")
 
     async def test_stop_cancels_pending_guild_requests(self) -> None:
         started = asyncio.Event()

@@ -195,10 +195,9 @@ class SpeechToText:
 
 
 class HotwordDetector:
-    _parallelism = 2
-
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
+        self._parallelism = max(1, settings.hotword_parallelism)
         self._model: Any = None
         self._model_lock = threading.Lock()
         self._slots = asyncio.Semaphore(self._parallelism)
@@ -284,7 +283,8 @@ class HotwordDetector:
             )
 
     async def try_detect(self, audio: np.ndarray) -> tuple[bool, str] | None:
-        if self._waiting > 0 or self._slots.locked():
+        # Run alongside other speakers while slots are free; finals still wait in detect().
+        if self._slots.locked():
             return None
         await self._slots.acquire()
         self._active += 1

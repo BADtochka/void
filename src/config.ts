@@ -46,6 +46,8 @@ export const config = {
   silenceMs: positiveInteger("DISCORD_SILENCE_MS", 850),
   minVoiceRms: nonNegativeInteger("DISCORD_MIN_VOICE_RMS", 120),
   minVoicePeak: nonNegativeInteger("DISCORD_MIN_VOICE_PEAK", 600),
+  minVoicedMs: positiveInteger("DISCORD_MIN_VOICED_MS", 180),
+  minVoicedRatio: boundedFloat("DISCORD_MIN_VOICED_RATIO", 0.12, 0, 1),
   audioCueVolume: boundedFloat("AUDIO_CUE_VOLUME", 0.045, 0, 0.2),
   hotwordCheckIntervalMs: positiveInteger("HOTWORD_CHECK_INTERVAL_MS", 650),
   hotwordMinAudioMs: positiveInteger("HOTWORD_MIN_AUDIO_MS", 600),

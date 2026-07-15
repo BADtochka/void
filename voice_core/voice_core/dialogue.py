@@ -35,6 +35,46 @@ _STOP_FILLER_WORDS = frozenset(
     {"ну", "пожалуйста", "плиз", "прошу", "давай", "ладно", "всё", "все"}
 )
 
+_STOP_INTERJECTIONS = frozenset(
+    {
+        "бля",
+        "блин",
+        "блять",
+        "блядь",
+        "ёб",
+        "еб",
+        "епт",
+        "ёпт",
+        "черт",
+        "чёрт",
+        "йоу",
+        "эй",
+        "алло",
+        "слыш",
+        "слушай",
+    }
+)
+
+_STOP_COMMAND_TOKENS = frozenset(
+    {
+        "стоп",
+        "стопэ",
+        "стопе",
+        "хватит",
+        "хвати",
+        "фатит",
+        "достаточно",
+        "харе",
+        "харэ",
+        "замолчи",
+        "молчи",
+        "отключайся",
+        "отключись",
+        "остановись",
+        "пока",
+    }
+)
+
 
 def normalize_stop_request(text: str) -> str:
     return " ".join(
@@ -62,6 +102,11 @@ class ConversationStore:
     ) -> None:
         self._wake_word_label = wake_word.strip().capitalize()
         self._wake_words = tuple(dict.fromkeys((wake_word, *wake_word_aliases))) if wake_word else ()
+        self._wake_token_sequences = tuple(
+            normalize_phrase(word).split()
+            for word in sorted(self._wake_words, key=len, reverse=True)
+            if normalize_phrase(word)
+        )
         alternatives = "|".join(
             _spoken_phrase_pattern(word)
             for word in sorted(self._wake_words, key=len, reverse=True)
@@ -203,10 +248,60 @@ class ConversationStore:
         return None
 
     def stop_if_requested(self, key: str, transcript: str) -> bool:
-        if normalize_stop_request(transcript) not in self._stop_phrases:
+        if not self._is_stop_request(transcript):
             return False
         self.stop(key)
         return True
+
+    def _strip_wake_phrases(self, normalized: str) -> str:
+        tokens = normalized.split()
+        if not tokens or not self._wake_token_sequences:
+            return normalized
+        kept: list[str] = []
+        index = 0
+        while index < len(tokens):
+            matched = False
+            for wake_tokens in self._wake_token_sequences:
+                end = index + len(wake_tokens)
+                if tokens[index:end] == wake_tokens:
+                    index = end
+                    matched = True
+                    break
+            if matched:
+                continue
+            kept.append(tokens[index])
+            index += 1
+        return " ".join(kept)
+
+    def _is_stop_request(self, transcript: str) -> bool:
+        normalized = normalize_stop_request(transcript)
+        if not normalized:
+            return False
+        if normalized in self._stop_phrases:
+            return True
+
+        without_wakes = self._strip_wake_phrases(normalized)
+        without_noise = " ".join(
+            token
+            for token in without_wakes.split()
+            if token not in _STOP_INTERJECTIONS
+        )
+        if not without_noise:
+            return False
+        if without_noise in self._stop_phrases:
+            return True
+
+        tokens = without_noise.split()
+        if tokens and set(tokens) <= _STOP_COMMAND_TOKENS and len(tokens) <= 8:
+            return True
+
+        for phrase in self._stop_phrases:
+            phrase_tokens = phrase.split()
+            if len(phrase_tokens) < 2:
+                continue
+            if without_noise == phrase or without_noise.endswith(f" {phrase}"):
+                return True
+        return False
 
     def stop(self, key: str) -> None:
         conversation = self._items.setdefault(key, Conversation())

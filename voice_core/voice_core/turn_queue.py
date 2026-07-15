@@ -292,6 +292,20 @@ class GenerationQueue:
                 self._cancel_followups(turn.request.guild_id)
                 self._direct.append(item)
             else:
+                active = self._active_item
+                if (
+                    active is not None
+                    and active.turn.request.speaker_key == turn.request.speaker_key
+                ):
+                    logger.info(
+                        "Generation follow-up dropped while same speaker is generating "
+                        "request_id=%s active_request_id=%s user_id=%s",
+                        item.request_id,
+                        active.request_id,
+                        turn.request.user_id,
+                    )
+                    _resolve(future, None)
+                    return await future
                 key = turn.request.speaker_key
                 replaced = self._followups.pop(key, None)
                 if replaced is not None:

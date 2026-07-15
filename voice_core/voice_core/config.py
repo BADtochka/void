@@ -90,6 +90,7 @@ class Settings:
     hotword_model: str = os.getenv("HOTWORD_MODEL", "small").strip()
     hotword_device: str = os.getenv("HOTWORD_DEVICE", "cpu").strip()
     hotword_compute_type: str = os.getenv("HOTWORD_COMPUTE_TYPE", "int8").strip()
+    hotword_parallelism: int = _positive_int("HOTWORD_PARALLELISM", 4)
     whisper_leading_silence_ms: int = _non_negative_int(
         "WHISPER_LEADING_SILENCE_MS", 400
     )

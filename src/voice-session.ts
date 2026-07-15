@@ -10,7 +10,7 @@ import {
   createAudioResource,
 } from "@discordjs/voice";
 import { PermissionFlagsBits, type Client, type GuildMember } from "discord.js";
-import { voiceLevelPassesThresholds } from "./audio-level.js";
+import { buildVoiceActivityStats, voiceCaptureLooksLikeSpeech, voicedSampleFloor } from "./audio-level.js";
 import { config } from "./config.js";
 import { createVoiceCue, type VoiceCueType } from "./audio-cues.js";
 import {
@@ -58,8 +58,7 @@ export class VoiceSession {
   private pendingMuteReason = "idle";
   private nextCaptureId = 1;
   private stopRevision = 0;
-  private hotwordDetectionBusy = false;
-  private hotwordBackoffUntil = 0;
+  private readonly hotwordBackoffUntilByUser = new Map<string, number>();
   private closed = false;
 
   constructor(
@@ -114,6 +113,7 @@ export class VoiceSession {
     this.awaitingContentUserId = null;
     this.awaitingContentConfirmed = false;
     this.pendingFollowupCountdownUsers.clear();
+    this.hotwordBackoffUntilByUser.clear();
     this.playbackQueue.length = 0;
     if (this.playbackStartTimer) clearTimeout(this.playbackStartTimer);
     this.playbackStartTimer = null;
@@ -279,6 +279,7 @@ export class VoiceSession {
     let invalidPackets = 0;
     let energySum = 0;
     let energySamples = 0;
+    let voicedSamples = 0;
     let peakAmplitude = 0;
     let finished = false;
     let earlyHotwordDetected = false;
@@ -286,6 +287,23 @@ export class VoiceSession {
     let hotwordTimedOut = false;
     let hotwordCheckPromise: Promise<void> | null = null;
     const captureStartedAt = performance.now();
+    const sampleVoiceFloor = voicedSampleFloor(config.minVoicePeak);
+
+    const voiceGateOptions = {
+      minimumRms: config.minVoiceRms,
+      minimumPeak: config.minVoicePeak,
+      minimumVoicedMs: config.minVoicedMs,
+      minimumVoicedRatio: config.minVoicedRatio,
+    };
+
+    const currentVoiceStats = (durationSeconds: number) =>
+      buildVoiceActivityStats(
+        energySum,
+        energySamples,
+        peakAmplitude,
+        voicedSamples,
+        durationSeconds,
+      );
 
     const activateHotword = (transcript: string, detection: "early" | "final"): void => {
       if (
@@ -343,27 +361,17 @@ export class VoiceSession {
         earlyHotwordDetected ||
         activeHotwordInterrupted ||
         hotwordTimedOut ||
-        this.hotwordDetectionBusy ||
-        performance.now() < this.hotwordBackoffUntil ||
         hotwordCheckPromise ||
+        performance.now() < (this.hotwordBackoffUntilByUser.get(userId) ?? 0) ||
         byteLength < (PCM_BYTES_PER_SECOND * config.hotwordMinAudioMs) / 1000
       ) {
         return hotwordCheckPromise;
       }
-      const currentRmsAmplitude =
-        energySamples > 0 ? Math.sqrt(energySum / energySamples) : 0;
-      if (
-        !voiceLevelPassesThresholds(
-          currentRmsAmplitude,
-          peakAmplitude,
-          config.minVoiceRms,
-          config.minVoicePeak,
-        )
-      ) {
+      const currentStats = currentVoiceStats(byteLength / PCM_BYTES_PER_SECOND);
+      if (!voiceCaptureLooksLikeSpeech(currentStats, voiceGateOptions)) {
         return null;
       }
       const snapshot = Buffer.concat(chunks, byteLength);
-      this.hotwordDetectionBusy = true;
       const check = detectHotword(snapshot)
         .then((result) => {
           if (
@@ -389,7 +397,10 @@ export class VoiceSession {
         .catch((error) => {
           if (error instanceof DOMException && error.name === "TimeoutError") {
             hotwordTimedOut = true;
-            this.hotwordBackoffUntil = performance.now() + config.hotwordTimeoutMs;
+            this.hotwordBackoffUntilByUser.set(
+              userId,
+              performance.now() + config.hotwordTimeoutMs,
+            );
             logWarn(
               "voice.hotword.detection_timed_out",
               this.context({ userId, displayName, timeoutMs: config.hotwordTimeoutMs }),
@@ -399,7 +410,6 @@ export class VoiceSession {
           logError("voice.hotword.detection_failed", error, this.context({ userId, displayName }));
         })
         .finally(() => {
-          this.hotwordDetectionBusy = false;
           if (hotwordCheckPromise === check) hotwordCheckPromise = null;
         });
       hotwordCheckPromise = check;
@@ -427,6 +437,9 @@ export class VoiceSession {
           const amplitude = Math.abs(sample);
           energySum += sample * sample;
           energySamples += 1;
+          if (amplitude >= sampleVoiceFloor) {
+            voicedSamples += 1;
+          }
           peakAmplitude = Math.max(peakAmplitude, amplitude);
         }
         chunks.push(acceptedPcm);
@@ -446,7 +459,7 @@ export class VoiceSession {
       clearInterval(hotwordTimer);
       this.capturingUserIds.delete(userId);
       const durationSeconds = byteLength / PCM_BYTES_PER_SECOND;
-      const rmsAmplitude = energySamples > 0 ? Math.sqrt(energySum / energySamples) : 0;
+      const voiceStats = currentVoiceStats(durationSeconds);
       if (invalidPackets > 0) {
         logWarn(
           "voice.capture.invalid_packets",
@@ -472,25 +485,22 @@ export class VoiceSession {
         );
         return;
       }
-      if (
-        !voiceLevelPassesThresholds(
-          rmsAmplitude,
-          peakAmplitude,
-          config.minVoiceRms,
-          config.minVoicePeak,
-        )
-      ) {
-        this.releasePendingWake(userId, earlyHotwordDetected, "capture_low_energy");
+      if (!voiceCaptureLooksLikeSpeech(voiceStats, voiceGateOptions)) {
+        this.releasePendingWake(userId, earlyHotwordDetected, "capture_not_speech");
         logInfo(
-          "voice.capture.discarded_low_energy",
+          "voice.capture.discarded_not_speech",
           this.context({
             userId,
             displayName,
             durationSeconds: durationSeconds.toFixed(2),
-            rmsAmplitude: Math.round(rmsAmplitude),
-            peakAmplitude,
+            rmsAmplitude: Math.round(voiceStats.rmsAmplitude),
+            peakAmplitude: voiceStats.peakAmplitude,
+            voicedMs: Math.round(voiceStats.voicedMs),
+            voicedRatio: Number(voiceStats.voicedRatio.toFixed(3)),
             minimumRms: config.minVoiceRms,
             minimumPeak: config.minVoicePeak,
+            minimumVoicedMs: config.minVoicedMs,
+            minimumVoicedRatio: config.minVoicedRatio,
           }),
         );
         return;
@@ -566,8 +576,10 @@ export class VoiceSession {
           displayName,
           durationSeconds: durationSeconds.toFixed(2),
           pcmBytes: byteLength,
-          rmsAmplitude: Math.round(rmsAmplitude),
-          peakAmplitude,
+          rmsAmplitude: Math.round(voiceStats.rmsAmplitude),
+          peakAmplitude: voiceStats.peakAmplitude,
+          voicedMs: Math.round(voiceStats.voicedMs),
+          voicedRatio: Number(voiceStats.voicedRatio.toFixed(3)),
           truncated,
         }),
       );

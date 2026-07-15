@@ -270,6 +270,19 @@ class ConversationStoreTests(unittest.TestCase):
         self.assertTrue(store.stop_if_requested("guild", "Помнихватит"))
         self.assertFalse(store.stop_if_requested("guild", "Омнислушивание"))
 
+    def test_noisy_repeated_wake_stop_is_recognized_locally(self) -> None:
+        store = ConversationStore(
+            "омни",
+            followup_seconds=30,
+            max_turns=2,
+            stop_phrases=("стоп", "хватит"),
+        )
+
+        self.assertTrue(store.stop_if_requested("guild", "Бля, омни хватит, омни стоп."))
+        self.assertTrue(store.stop_if_requested("guild", "омни хватит омни стоп"))
+        self.assertFalse(store.stop_if_requested("guild", "Омни, какая погода"))
+        self.assertFalse(store.stop_if_requested("guild", "хватит уже врать про погоду"))
+
     def test_stop_aliases_and_bare_followup_stop_are_recognized(self) -> None:
         store = ConversationStore(
             "омни",
