@@ -15,8 +15,10 @@ class ToolingTests(unittest.TestCase):
         self.assertIn("Омни", DEFAULT_SYSTEM_PROMPT)
         self.assertIn("current_identity", DEFAULT_SYSTEM_PROMPT)
         self.assertIn("сам решай", DEFAULT_SYSTEM_PROMPT.casefold())
+        self.assertIn("русскую озвучку", DEFAULT_SYSTEM_PROMPT.casefold())
+        self.assertIn("нет прав", DEFAULT_SYSTEM_PROMPT.casefold())
         self.assertNotIn("get_current_weather", DEFAULT_SYSTEM_PROMPT)
-        self.assertLess(len(DEFAULT_SYSTEM_PROMPT), 1_600)
+        self.assertLess(len(DEFAULT_SYSTEM_PROMPT), 1_800)
 
     def test_end_conversation_detection_covers_free_form(self) -> None:
         self.assertTrue(requested_end_conversation("давай на этом закончим"))
@@ -71,6 +73,15 @@ class ToolingTests(unittest.TestCase):
     def test_tool_status_speech_is_neutral(self) -> None:
         self.assertEqual(tool_status_speech("search_web"), "Ищу в сети.")
         self.assertIsNone(tool_status_speech("unknown_tool"))
+
+    def test_incomplete_tool_promise_detection(self) -> None:
+        from voice_core.tooling import is_incomplete_tool_promise
+
+        self.assertTrue(is_incomplete_tool_promise("tochkablsq, сейчас посмотрю."))
+        self.assertTrue(is_incomplete_tool_promise("Секунду."))
+        self.assertTrue(is_incomplete_tool_promise("Ищу в сети."))
+        self.assertFalse(is_incomplete_tool_promise("В Чебоксарах около пятисот тысяч человек."))
+        self.assertFalse(is_incomplete_tool_promise("Привет, как дела?"))
 
     def test_end_conversation_tool_accepts_optional_farewell(self) -> None:
         parameters = END_CONVERSATION_TOOL["function"]["parameters"]

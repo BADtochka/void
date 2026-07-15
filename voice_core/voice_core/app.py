@@ -24,6 +24,7 @@ from .public_info import (  # noqa: E402
     requested_web_search,
 )
 from .services import HotwordDetector, LanguageModel, SpeechToText, TextToSpeech, ToolResult  # noqa: E402
+from .speech_normalization import russianize_address_name  # noqa: E402
 from .tooling import (  # noqa: E402
     END_CONVERSATION_FAREWELL,
     END_CONVERSATION_TOOL,
@@ -515,7 +516,7 @@ async def generate_turn(turn: PreparedTurn) -> bytes | None:
     preferred_name = user_memory.get(
         request.guild_id, request.user_id, "preferred_name"
     )
-    speaker_name = preferred_name or request.display_name
+    speaker_name = preferred_name or russianize_address_name(request.display_name)
     participant = store.register_participant(
         request.guild_id,
         request.user_id,
@@ -527,6 +528,8 @@ async def generate_turn(turn: PreparedTurn) -> bytes | None:
             "identity_key": item.identity_key,
             "display_name": item.display_name,
             "preferred_name": item.preferred_name,
+            "spoken_name": item.preferred_name
+            or russianize_address_name(item.display_name),
         }
         for item in store.participants(request.guild_id)
     ]

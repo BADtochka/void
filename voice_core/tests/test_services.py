@@ -444,6 +444,87 @@ class LanguageModelToolChoiceTests(unittest.IsolatedAsyncioTestCase):
             "Сейчас не могу ответить. Попробуй ещё раз.",
         )
 
+    async def test_incomplete_tool_promise_nudges_for_tool_call(self) -> None:
+        model = LanguageModel(Settings())
+        spoken: list[str] = []
+        payloads: list[dict[str, object]] = []
+        completions = iter(
+            [
+                (
+                    {
+                        "content": "tochkablsq, сейчас посмотрю.",
+                        "reasoning_content": "",
+                        "tool_calls": [],
+                    },
+                    "stop",
+                ),
+                (
+                    {
+                        "content": "",
+                        "reasoning_content": "",
+                        "tool_calls": [
+                            {
+                                "id": "lookup-1",
+                                "type": "function",
+                                "function": {
+                                    "name": "lookup_topic",
+                                    "arguments": '{"topic":"Чебоксары"}',
+                                },
+                            }
+                        ],
+                    },
+                    "tool_calls",
+                ),
+                (
+                    {
+                        "content": "В Чебоксарах около пятисот тысяч жителей.",
+                        "reasoning_content": "",
+                        "tool_calls": [],
+                    },
+                    "stop",
+                ),
+            ]
+        )
+
+        async def fake_completion(payload, _request_number):
+            payloads.append(dict(payload))
+            return next(completions)
+
+        async def tool_handler(name, arguments):
+            self.assertEqual(name, "lookup_topic")
+            return '{"found":true,"summary":"около 500 тысяч"}'
+
+        async def collect_status(text: str) -> None:
+            spoken.append(text)
+
+        weather_tool = {
+            "type": "function",
+            "function": {
+                "name": "lookup_topic",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+        model._stream_completion = fake_completion
+        try:
+            answer = await model.reply(
+                [],
+                "поищи сколько человек живет в Чебоксарах",
+                [weather_tool],
+                tool_handler,
+                on_status_speech=collect_status,
+            )
+        finally:
+            await model.close()
+
+        self.assertEqual(answer, "В Чебоксарах около пятисот тысяч жителей.")
+        self.assertEqual(spoken, ["tochkablsq, сейчас посмотрю."])
+        self.assertEqual(len(payloads), 3)
+        nudged = any(
+            "не вызвал инструмент" in str(message.get("content") or "").casefold()
+            for message in payloads[1]["messages"]
+        )
+        self.assertTrue(nudged)
+
     async def test_denied_tool_returns_spoken_error_without_false_hope(self) -> None:
         model = LanguageModel(Settings())
         spoken: list[str] = []
@@ -471,7 +552,7 @@ class LanguageModelToolChoiceTests(unittest.IsolatedAsyncioTestCase):
             return ToolResult(
                 '{"ok":false,"denied":true}',
                 terminate=True,
-                response="Поиск в сети тебе недоступен. Его могут включить администраторы сервера.",
+                response="У тебя нет прав на поиск в сети. Их могут выдать администраторы сервера.",
             )
 
         async def collect_status(text: str) -> None:
@@ -492,7 +573,7 @@ class LanguageModelToolChoiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             answer,
-            "Поиск в сети тебе недоступен. Его могут включить администраторы сервера.",
+            "У тебя нет прав на поиск в сети. Их могут выдать администраторы сервера.",
         )
         self.assertEqual(spoken, [])
 

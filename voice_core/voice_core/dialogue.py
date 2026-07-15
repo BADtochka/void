@@ -398,6 +398,8 @@ def prepare_for_speech(text: str, limit: int = 1_200) -> str:
         flags=re.IGNORECASE,
     )
     text = re.sub(r"^\s*\[\s*омни\s*\]\s*[:\-–—]?\s*", "", text, flags=re.IGNORECASE)
+    # Drop Discord-like Latin nicknames used as vocatives: «tochkablsq, сейчас…»
+    text = re.sub(r"^[a-z0-9._]{2,32},\s+", "", text, flags=re.IGNORECASE)
     text = re.sub(r"```.*?```", " Фрагмент кода опущен. ", text, flags=re.DOTALL)
     text = re.sub(
         r"\[Служебная принадлежность[^\]]*\]",

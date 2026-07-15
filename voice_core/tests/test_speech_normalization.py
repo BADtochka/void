@@ -56,6 +56,14 @@ class RussianSpeechNormalizationTests(unittest.TestCase):
         self.assertEqual(normalized, "руст анд котлин")
         self.assertNotRegex(normalized, r"[A-Za-z]")
 
+    def test_russianize_address_name_converts_discord_nicks(self) -> None:
+        from voice_core.speech_normalization import russianize_address_name
+
+        self.assertEqual(russianize_address_name("tochkablsq"), "точкаблск")
+        self.assertEqual(russianize_address_name(".formallybad"), "формаллйбад")
+        self.assertEqual(russianize_address_name("Пупсик"), "Пупсик")
+        self.assertEqual(russianize_address_name("Маша"), "Маша")
+
 
 if __name__ == "__main__":
     unittest.main()

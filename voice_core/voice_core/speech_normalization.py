@@ -188,6 +188,34 @@ def _normalize_latin_words(text: str) -> str:
     )
 
 
+def russianize_address_name(name: str) -> str:
+    """Convert a Discord display name into a Russian-pronounceable address form."""
+    cleaned = name.strip()
+    if not cleaned:
+        return cleaned
+    cleaned = re.sub(r"^[\W_]+", "", cleaned, flags=re.UNICODE)
+    cleaned = re.sub(r"[\W_]+$", "", cleaned, flags=re.UNICODE)
+    if not cleaned:
+        return name.strip()
+
+    cyrillic_chars = len(re.findall(r"[а-яё]", cleaned.casefold()))
+    latin_chars = len(re.findall(r"[a-z]", cleaned.casefold()))
+    if cyrillic_chars and cyrillic_chars >= latin_chars:
+        return cleaned
+
+    pieces = re.findall(r"[A-Za-z0-9]+|[А-Яа-яЁё]+|[^A-Za-z0-9А-Яа-яЁё]+", cleaned)
+    converted: list[str] = []
+    for piece in pieces:
+        if re.fullmatch(r"[A-Za-z]+", piece):
+            converted.append(_transliterate_english_word(piece))
+        elif re.fullmatch(r"[A-Za-z0-9]+", piece):
+            converted.append(_normalize_latin_words(piece))
+        else:
+            converted.append(piece)
+    result = "".join(converted).strip()
+    return result or cleaned
+
+
 def normalize_russian_tts_text(text: str) -> str:
     def replace_unit(match: re.Match[str]) -> str:
         try:

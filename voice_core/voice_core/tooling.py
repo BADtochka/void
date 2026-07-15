@@ -15,14 +15,17 @@ DEFAULT_SYSTEM_PROMPT = (
     "Не выводи think, reasoning, analysis и внутренние рассуждения. "
     "Ответ озвучивается синтезатором — пиши только то, что можно произнести вслух. "
     "В запросе есть roster участников и current_identity: разные identity_key — разные люди. "
-    "Отвечай только current_identity. current_name — уже известное имя текущего говорящего: "
-    "используй его для обращения, не ищи другое имя в базе. "
+    "Отвечай только current_identity. current_name — уже готовое русское обращение к говорящему "
+    "(preferred name или Discord-ник, переведённый в русскую озвучку): обращайся только так. "
+    "Не произноси сырой латинский Discord-ник. "
     "Местоимения «я/меня/мне» в реплике относятся только к current_identity. "
     "Никогда не произноси identity_key. "
     "Сам решай, когда нужен инструмент: вызывай tool call, не пиши имена инструментов в тексте. "
     "На приветствие и обычную болтовню отвечай текстом без инструментов. "
-    "Перед вызовом можешь коротко сказать нейтральную фразу («Секунду», «Сейчас посмотрю») — "
-    "она озвучится сразу. "
+    "Перед вызовом инструмента можешь коротко сказать нейтральную фразу "
+    "(«Секунду», «Сейчас посмотрю») — но только вместе с tool call в том же ответе. "
+    "Не обещай «посмотреть/найти/проверить», если не вызываешь инструмент. "
+    "Если инструмент недоступен из‑за прав — прямо скажи, что нет прав, без обещаний выполнить. "
     "Чтобы закончить голосовой диалог, вызови end_conversation; прощание — только в farewell."
 )
 
@@ -40,7 +43,7 @@ TOOL_STATUS_SPEECH: dict[str, str] = {
 
 TOOL_DENIED_SPEECH: dict[str, str] = {
     "search_web": (
-        "Поиск в сети тебе недоступен. Его могут включить администраторы сервера."
+        "У тебя нет прав на поиск в сети. Их могут выдать администраторы сервера."
     ),
 }
 
@@ -189,6 +192,49 @@ def tool_denied_speech(tool_name: str) -> str:
     )
 
 
+_PROGRESS_PROMISE_MARKERS = (
+    "секунд",
+    "минутку",
+    "момент",
+    "подожди",
+    "сейчас посм",
+    "сейчас провер",
+    "сейчас уточн",
+    "сейчас найд",
+    "сейчас поищ",
+    "сейчас глян",
+    "сейчас ищ",
+    "сейчас смотр",
+    "сейчас подбер",
+    "ищу в сети",
+    "смотрю погоду",
+    "уточняю имя",
+    "отправляю в чат",
+    "запоминаю",
+    "забываю",
+    "один момент",
+    "давай посмотр",
+)
+
+
+def is_incomplete_tool_promise(text: str) -> bool:
+    """True when the model only promised to look something up without a tool call."""
+    cleaned = re.sub(r"\s+", " ", text.strip()).casefold().rstrip(".!…")
+    if not cleaned or len(cleaned) > 100:
+        return False
+    # Drop a leading nickname: «tochkablsq, сейчас посмотрю»
+    cleaned = re.sub(r"^[\w.]{2,32},\s+", "", cleaned, count=1)
+    cleaned = cleaned.strip(" ,.!")
+    if not cleaned:
+        return False
+    for speech in TOOL_STATUS_SPEECH.values():
+        if cleaned == speech.casefold().rstrip(".!…"):
+            return True
+    return any(marker in cleaned for marker in _PROGRESS_PROMISE_MARKERS) and len(
+        cleaned
+    ) <= 60
+
+
 def select_assistant_tools(
     text: str,
     *,
@@ -223,18 +269,19 @@ def build_turn_prompt(
         "web_search=allowed"
         if web_search_allowed
         else (
-            "web_search=denied — поиск в сети этому пользователю закрыт. "
-            "Если просят искать, вызови search_web или прямо скажи, что доступ закрыт. "
-            "Не обещай, что сейчас поищешь."
+            "web_search=denied — у этого пользователя нет прав на поиск в сети. "
+            "Если просят искать в интернете, вызови search_web (backend озвучит отказ) "
+            "или сразу скажи, что нет прав. Не обещай, что сейчас поищешь."
         )
     )
     return (
-        "[Контекст участников. Не цитируй identity_key.]\n"
+        "[Контекст участников. Не цитируй identity_key и сырые Discord-ники латиницей.]\n"
         f"participants={json.dumps(roster, ensure_ascii=False)}\n"
         f"current_identity={identity_key}\n"
         f"current_name={json.dumps(speaker_name, ensure_ascii=False)}\n"
         "Отвечай только current_identity. Его «я/меня/мне» не переноси на других. "
-        "current_name уже известно — обращайся так; не подменяй чужим именем из roster.\n"
+        "current_name — русское обращение к говорящему; используй его. "
+        "В roster поле spoken_name — как произносить других участников.\n"
         f"{web_search_line}\n"
         f"[Реплика]\n{accepted_text}"
     )

@@ -385,6 +385,12 @@ class ConversationStoreTests(unittest.TestCase):
         text = "Первое. Второе. Третье. Четвёртое."
         self.assertEqual(trim_truncated_completion(text, max_sentences=2), "Первое. Второе.")
 
+    def test_discord_nickname_vocative_is_removed_before_speech(self) -> None:
+        self.assertEqual(
+            prepare_for_speech("tochkablsq, сейчас посмотрю."),
+            "сейчас посмотрю.",
+        )
+
     def test_glued_tool_hallucinations_are_stripped(self) -> None:
         artifact = (
             'lookupusername(subject="Пупсик") rememberpreferredname, preferredname="Пупсик" '

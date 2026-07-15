@@ -19,7 +19,7 @@ from .config import Settings
 from .audio_effects import apply_robotic_voice_effect
 from .dialogue import normalize_phrase, trim_truncated_completion
 from .speech_normalization import normalize_russian_tts_text
-from .tooling import tool_denied_speech, tool_status_speech
+from .tooling import is_incomplete_tool_promise, tool_denied_speech, tool_status_speech
 from .whisper_models import resolve_model
 from .windows_dlls import configure_windows_cuda_dlls
 
@@ -29,6 +29,12 @@ _SILERO_SENTENCE_PATTERN = re.compile(r"\S(?:.*?\S)?(?:[.!?]+(?=\s|$)|$)")
 _MAX_TOOL_ROUNDS = 3
 _TOOL_LIMIT_FALLBACK = "Сейчас не получается проверить это. Скажи ещё раз чуть проще."
 _LM_REQUEST_FALLBACK = "Сейчас не могу ответить. Попробуй ещё раз."
+_INCOMPLETE_TOOL_NUDGE = (
+    "Ты пообещал посмотреть или найти информацию, но не вызвал инструмент. "
+    "Сейчас обязательно сделай tool call (например search_web или lookup_topic). "
+    "Не отвечай обычным текстом до результата инструмента."
+)
+_INCOMPLETE_TOOL_FALLBACK = "Не удалось это проверить. Скажи ещё раз."
 
 
 def _silero_sentences(text: str) -> list[str]:
@@ -430,6 +436,8 @@ class LanguageModel:
         tool_rounds = 0
         request_number = 0
         tools_disabled_after_error = False
+        incomplete_promise_retries = 0
+        progress_already_announced = False
         status_blocked = blocked_status_tools or frozenset()
         while True:
             request_number += 1
@@ -561,6 +569,7 @@ class LanguageModel:
                     and on_status_speech is not None
                     and not ending_only
                     and not skip_status_for_denied_tools
+                    and not progress_already_announced
                 ):
                     await on_status_speech(model_status)
                     announced_model_status = True
@@ -570,6 +579,7 @@ class LanguageModel:
                     if (
                         on_status_speech is not None
                         and not announced_model_status
+                        and not progress_already_announced
                         and tool_name
                         and tool_name != "end_conversation"
                         and tool_name not in status_blocked
@@ -578,6 +588,7 @@ class LanguageModel:
                         if announcement:
                             await on_status_speech(announcement)
                             announced_model_status = True
+                            progress_already_announced = True
                     try:
                         arguments = json.loads(function.get("arguments") or "{}")
                         if not isinstance(arguments, dict):
@@ -622,6 +633,34 @@ class LanguageModel:
                 continue
 
             if content:
+                if (
+                    tools
+                    and not tool_calls
+                    and incomplete_promise_retries < 1
+                    and is_incomplete_tool_promise(content)
+                ):
+                    incomplete_promise_retries += 1
+                    logger.warning(
+                        "LM Studio promised progress without a tool call; nudging request=%s text=%r",
+                        request_number,
+                        content,
+                    )
+                    if on_status_speech is not None:
+                        await on_status_speech(content)
+                        progress_already_announced = True
+                    messages.append({"role": "assistant", "content": content})
+                    messages.append({"role": "user", "content": _INCOMPLETE_TOOL_NUDGE})
+                    continue
+                if (
+                    tools
+                    and not tool_calls
+                    and incomplete_promise_retries
+                    and is_incomplete_tool_promise(content)
+                ):
+                    logger.warning(
+                        "LM Studio still promised progress without tools; using fallback"
+                    )
+                    return _INCOMPLETE_TOOL_FALLBACK
                 if finish_reason == "length":
                     trimmed = trim_truncated_completion(content)
                     if trimmed:
