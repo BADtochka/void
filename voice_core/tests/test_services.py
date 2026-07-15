@@ -194,6 +194,64 @@ class LanguageModelToolChoiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(answer, "Знаю, босс. Идём дальше?")
 
+    async def test_tool_round_limit_falls_back_to_spoken_answer(self) -> None:
+        model = LanguageModel(Settings())
+        payloads: list[dict[str, object]] = []
+        weather_tool = {
+            "type": "function",
+            "function": {
+                "name": "get_current_weather",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+
+        async def fake_completion(payload, _request_number):
+            payloads.append(dict(payload))
+            if "tools" in payload:
+                return (
+                    {
+                        "content": "",
+                        "reasoning_content": "",
+                        "tool_calls": [
+                            {
+                                "id": f"call-{len(payloads)}",
+                                "type": "function",
+                                "function": {
+                                    "name": "get_current_weather",
+                                    "arguments": '{"city":"Москва"}',
+                                },
+                            }
+                        ],
+                    },
+                    "tool_calls",
+                )
+            return (
+                {
+                    "content": "Сейчас в Москве около плюс десяти.",
+                    "reasoning_content": "",
+                    "tool_calls": [],
+                },
+                "stop",
+            )
+
+        async def tool_handler(_name, _arguments):
+            return '{"ok":true}'
+
+        model._stream_completion = fake_completion
+        try:
+            answer = await model.reply(
+                [],
+                "какая погода?",
+                [weather_tool],
+                tool_handler,
+            )
+        finally:
+            await model.close()
+
+        self.assertEqual(answer, "Сейчас в Москве около плюс десяти.")
+        self.assertEqual(sum(1 for payload in payloads if "tools" in payload), 4)
+        self.assertTrue(any("tools" not in payload for payload in payloads))
+
     async def test_terminal_tool_can_supply_backend_response(self) -> None:
         model = LanguageModel(Settings())
         payloads = []

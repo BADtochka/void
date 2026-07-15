@@ -26,6 +26,8 @@ from .windows_dlls import configure_windows_cuda_dlls
 logger = logging.getLogger(__name__)
 
 _SILERO_SENTENCE_PATTERN = re.compile(r"\S(?:.*?\S)?(?:[.!?]+(?=\s|$)|$)")
+_MAX_TOOL_ROUNDS = 3
+_TOOL_LIMIT_FALLBACK = "Сейчас не получается проверить это. Скажи ещё раз чуть проще."
 
 
 def _silero_sentences(text: str) -> list[str]:
@@ -459,9 +461,41 @@ class LanguageModel:
             if tool_calls:
                 if tool_handler is None:
                     raise RuntimeError("LM Studio requested a tool, but no tool handler is configured")
+                if tool_rounds >= _MAX_TOOL_ROUNDS:
+                    logger.warning(
+                        "LM Studio exceeded the maximum number of tool rounds; finishing without more tools"
+                    )
+                    spoken = content.strip()
+                    if spoken:
+                        return spoken
+                    if tools is None:
+                        return _TOOL_LIMIT_FALLBACK
+                    messages.append(
+                        {
+                            "role": "assistant",
+                            "content": content or None,
+                            "tool_calls": tool_calls,
+                        }
+                    )
+                    for tool_call in tool_calls:
+                        function = tool_call.get("function") or {}
+                        tool_name = str(function.get("name") or "tool")
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": str(tool_call.get("id") or tool_name),
+                                "content": json.dumps(
+                                    {
+                                        "ok": False,
+                                        "error": "tool limit reached; answer in plain spoken text now",
+                                    }
+                                ),
+                            }
+                        )
+                    tools = None
+                    required_tool_name = None
+                    continue
                 tool_rounds += 1
-                if tool_rounds > 3:
-                    raise RuntimeError("LM Studio exceeded the maximum number of tool rounds")
                 messages.append(
                     {"role": "assistant", "content": content or None, "tool_calls": tool_calls}
                 )
@@ -538,6 +572,12 @@ class LanguageModel:
                         )
                         content = trimmed
                 return content
+
+            if tools is None and empty_retries == 0 and tool_rounds >= _MAX_TOOL_ROUNDS:
+                logger.warning(
+                    "LM Studio returned empty content after tool limit; using fallback reply"
+                )
+                return _TOOL_LIMIT_FALLBACK
 
             if empty_retries == 0:
                 empty_retries += 1
