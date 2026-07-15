@@ -5,15 +5,18 @@ import json
 import logging
 import re
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import httpx
+from bs4 import BeautifulSoup
 
 logger = logging.getLogger("voice-core.public-info")
 
 
 def requested_public_tool(text: str) -> str | None:
     normalized = " ".join(text.casefold().split())
+    if requested_web_search(text):
+        return "search_web"
     if any(marker in normalized for marker in ("анекдот", "пошути", "шутку", "шутка")):
         return "get_random_joke"
     if any(
@@ -26,6 +29,52 @@ def requested_public_tool(text: str) -> str | None:
     if re.search(r"\b(?:кто\s+так(?:ой|ая|ое)|что\s+такое)\b", normalized):
         return "lookup_topic"
     return None
+
+
+def requested_web_search(text: str) -> bool:
+    normalized = " ".join(text.casefold().split())
+    if any(marker in normalized for marker in ("загугли", "погугли")):
+        return True
+    action = any(
+        marker in normalized
+        for marker in ("найди", "поищи", "поиск", "поищем", "посмотри")
+    )
+    source = any(
+        marker in normalized
+        for marker in ("в интернете", "в сети", "в вебе", "web", "онлайн")
+    )
+    return action and source
+
+
+WEB_SEARCH_TOOL: dict[str, object] = {
+    "type": "function",
+    "function": {
+        "name": "search_web",
+        "description": (
+            "Найди актуальную информацию в интернете через поисковую выдачу. Используй только "
+            "когда пользователь просит поискать, проверить свежие сведения, новости, текущие "
+            "версии или другую информацию, которой может не быть во внутренних знаниях. "
+            "Кратко перескажи результаты и явно отмечай неопределённость поисковых сниппетов."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Короткий и точный поисковый запрос без вводных слов.",
+                },
+                "max_results": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 8,
+                    "description": "Количество результатов; обычно достаточно 5.",
+                },
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
+}
 
 
 PUBLIC_INFO_TOOLS: list[dict[str, object]] = [
@@ -163,6 +212,21 @@ def _plain_excerpt(value: object) -> str:
     return " ".join(text.split())
 
 
+def _duckduckgo_result_url(value: str) -> str:
+    url = html.unescape(value).strip()
+    if url.startswith("//"):
+        url = f"https:{url}"
+    parsed = urlparse(url)
+    if parsed.netloc.endswith("duckduckgo.com"):
+        redirected = parse_qs(parsed.query).get("uddg", [])
+        if redirected:
+            url = unquote(redirected[0])
+            parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return url
+
+
 class PublicInformationService:
     def __init__(self, client: httpx.AsyncClient | None = None) -> None:
         self._owns_client = client is None
@@ -197,10 +261,43 @@ class PublicInformationService:
                 topic,
                 search_query,
             )
+        elif tool_name == "search_web":
+            max_results = int(arguments.get("max_results") or 5)
+            result = await self._web_search(
+                _required_text(arguments, "query", max_length=240),
+                min(max(max_results, 1), 8),
+            )
         else:
             raise ValueError(f"unknown public information tool: {tool_name}")
         logger.info("Public API tool finished tool=%s", tool_name)
         return json.dumps(result, ensure_ascii=False)
+
+    async def _web_search(self, query: str, max_results: int) -> dict[str, Any]:
+        response = await self._client.get(
+            "https://html.duckduckgo.com/html/",
+            params={"q": query},
+        )
+        response.raise_for_status()
+        document = BeautifulSoup(response.text, "html.parser")
+        results: list[dict[str, str]] = []
+        for item in document.select(".result"):
+            link = item.select_one(".result__a")
+            if link is None:
+                continue
+            title = _plain_excerpt(link.get_text(" ", strip=True))
+            url = _duckduckgo_result_url(str(link.get("href") or ""))
+            if not title or not url:
+                continue
+            snippet_node = item.select_one(".result__snippet")
+            snippet = (
+                _plain_excerpt(snippet_node.get_text(" ", strip=True))
+                if snippet_node is not None
+                else ""
+            )
+            results.append({"title": title, "url": url, "snippet": snippet})
+            if len(results) >= max_results:
+                break
+        return {"query": query, "found": bool(results), "results": results}
 
     async def _weather(self, city: str) -> dict[str, Any]:
         geocoding = await self._client.get(

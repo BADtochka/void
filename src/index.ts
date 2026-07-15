@@ -11,6 +11,7 @@ import {
   GatewayIntentBits,
   GuildMember,
   MessageFlags,
+  PermissionFlagsBits,
   REST,
   Routes,
   SlashCommandBuilder,
@@ -21,7 +22,10 @@ import { splitDiscordMessage } from "./discord-messages.js";
 import {
   getCoreHealth,
   getTtsVoices,
+  grantWebSearchAccess,
+  listWebSearchAccess,
   resetConversation,
+  revokeWebSearchAccess,
   setTtsEffect,
   setTtsVoice,
   syncUserDirectory,
@@ -111,6 +115,29 @@ async function registerCommands(): Promise<void> {
           .setDescription("Профиль обработки")
           .setRequired(true)
           .addChoices(...effectChoices),
+      ),
+    new SlashCommandBuilder()
+      .setName("web-access")
+      .setDescription("Управлять доступом к поиску в сети")
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+      .addSubcommand((subcommand) =>
+        subcommand
+          .setName("add")
+          .setDescription("Разрешить пользователю поиск в сети")
+          .addUserOption((option) =>
+            option.setName("user").setDescription("Пользователь").setRequired(true),
+          ),
+      )
+      .addSubcommand((subcommand) =>
+        subcommand
+          .setName("remove")
+          .setDescription("Убрать пользователя из списка доступа")
+          .addUserOption((option) =>
+            option.setName("user").setDescription("Пользователь").setRequired(true),
+          ),
+      )
+      .addSubcommand((subcommand) =>
+        subcommand.setName("list").setDescription("Показать список доступа"),
       ),
   ].map((command) => command.toJSON());
   const rest = new REST().setToken(config.discordToken);
@@ -258,6 +285,45 @@ async function handleImage(interaction: ChatInputCommandInteraction): Promise<vo
   await interaction.editReply("Изображение добавлено. После сигнала надиктуйте запрос.");
 }
 
+async function handleWebAccess(interaction: ChatInputCommandInteraction): Promise<void> {
+  if (!interaction.guildId || !interaction.guild) {
+    throw new Error("This command is only available in a guild");
+  }
+  if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+    await interaction.reply({
+      content: "Команда доступна только администраторам сервера.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const action = interaction.options.getSubcommand(true);
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  if (action === "list") {
+    const users = await listWebSearchAccess(interaction.guildId);
+    const content = users.length
+      ? users.map((user) => `• ${user.displayName ?? user.userId}`).join("\n")
+      : "Список пуст. Администраторы имеют доступ автоматически.";
+    const [firstPart, ...remainingParts] = splitDiscordMessage(content);
+    await interaction.editReply(firstPart);
+    for (const part of remainingParts) {
+      await interaction.followUp({ content: part, flags: MessageFlags.Ephemeral });
+    }
+    return;
+  }
+
+  const user = interaction.options.getUser("user", true);
+  const member = await interaction.guild.members.fetch(user.id).catch(() => null);
+  const displayName = member?.displayName ?? user.globalName ?? user.username;
+  if (action === "add") {
+    await grantWebSearchAccess(interaction.guildId, user.id, displayName);
+    await interaction.editReply(`Доступ к поиску выдан: ${displayName}.`);
+    return;
+  }
+  await revokeWebSearchAccess(interaction.guildId, user.id);
+  await interaction.editReply(`Доступ к поиску отозван: ${displayName}.`);
+}
+
 async function handleInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
   const guildId = interaction.guildId;
   switch (interaction.commandName) {
@@ -309,6 +375,9 @@ async function handleInteraction(interaction: ChatInputCommandInteraction): Prom
       await interaction.editReply(`Обработка голоса: ${effect.label}.`);
       break;
     }
+    case "web-access":
+      await handleWebAccess(interaction);
+      break;
   }
 }
 

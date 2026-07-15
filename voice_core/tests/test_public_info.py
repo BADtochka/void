@@ -5,8 +5,10 @@ import httpx
 
 from voice_core.public_info import (
     PUBLIC_INFO_TOOLS,
+    WEB_SEARCH_TOOL,
     PublicInformationService,
     requested_public_tool,
+    requested_web_search,
 )
 
 
@@ -214,6 +216,41 @@ class PublicInformationServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["topic"], "космонавты")
         self.assertNotIn("joke", result)
 
+    async def test_web_search_parses_results_and_unwraps_redirects(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.url.host, "html.duckduckgo.com")
+            self.assertEqual(request.url.params["q"], "актуальная версия Python")
+            return httpx.Response(
+                200,
+                html="""
+                    <div class="result">
+                      <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fpython.org%2Fdownloads%2F">Python releases</a>
+                      <div class="result__snippet">Latest stable Python release.</div>
+                    </div>
+                    <div class="result">
+                      <a class="result__a" href="https://docs.python.org/3/">Python docs</a>
+                      <div class="result__snippet">Official documentation.</div>
+                    </div>
+                """,
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            service = PublicInformationService(client)
+            result = json.loads(
+                await service.execute(
+                    "search_web",
+                    {"query": "актуальная версия Python", "max_results": 1},
+                )
+            )
+
+        self.assertTrue(result["found"])
+        self.assertEqual(len(result["results"]), 1)
+        self.assertEqual(result["results"][0]["title"], "Python releases")
+        self.assertEqual(
+            result["results"][0]["url"], "https://python.org/downloads/"
+        )
+        self.assertEqual(result["results"][0]["snippet"], "Latest stable Python release.")
+
     def test_tools_have_distinct_names_and_strict_arguments(self) -> None:
         functions = [tool["function"] for tool in PUBLIC_INFO_TOOLS]
         self.assertEqual(
@@ -222,6 +259,10 @@ class PublicInformationServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         for function in functions:
             self.assertFalse(function["parameters"]["additionalProperties"])
+        self.assertEqual(WEB_SEARCH_TOOL["function"]["name"], "search_web")
+        self.assertFalse(
+            WEB_SEARCH_TOOL["function"]["parameters"]["additionalProperties"]
+        )
 
     def test_explicit_requests_force_the_matching_tool(self) -> None:
         self.assertEqual(
@@ -241,6 +282,16 @@ class PublicInformationServiceTests(unittest.IsolatedAsyncioTestCase):
             "lookup_topic",
         )
         self.assertIsNone(requested_public_tool("Расскажи короткую историю"))
+
+    def test_explicit_web_search_requests_are_detected(self) -> None:
+        for text in (
+            "Найди в интернете свежие новости",
+            "Поищи в сети документацию",
+            "Загугли последнюю версию Python",
+        ):
+            self.assertTrue(requested_web_search(text))
+            self.assertEqual(requested_public_tool(text), "search_web")
+        self.assertFalse(requested_web_search("Найди ошибку в этом коде"))
 
 
 if __name__ == "__main__":

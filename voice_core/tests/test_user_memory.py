@@ -74,6 +74,23 @@ class UserMemoryStoreTests(unittest.TestCase):
             self.assertTrue(store.delete("guild", "user", "preferred_name"))
             self.assertIsNone(store.get("guild", "user", "preferred_name"))
 
+    def test_web_search_access_persists_and_is_isolated_by_guild(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "memory.sqlite3")
+            store = UserMemoryStore(path)
+            store.prepare()
+            store.grant_web_search_access("guild", "user", "Пользователь")
+
+            reopened = UserMemoryStore(path)
+            self.assertTrue(reopened.has_web_search_access("guild", "user"))
+            self.assertFalse(reopened.has_web_search_access("other", "user"))
+            self.assertEqual(
+                reopened.list_web_search_access("guild")[0].display_name,
+                "Пользователь",
+            )
+            self.assertTrue(reopened.revoke_web_search_access("guild", "user"))
+            self.assertFalse(reopened.has_web_search_access("guild", "user"))
+
     def test_fuzzy_name_lookup_matches_transliterated_discord_nickname(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = UserMemoryStore(str(Path(directory) / "memory.sqlite3"))

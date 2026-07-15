@@ -46,6 +46,9 @@ class _FakeUserMemory:
     def get(self, *_args):
         return None
 
+    def has_web_search_access(self, *_args):
+        return False
+
 
 class _FakeSelectableTextToSpeech:
     def selected_voice(self, guild_id):
@@ -254,6 +257,105 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
                 app_module.store.reset(guild_id)
                 await asyncio.sleep(0)
 
+    async def test_admin_web_search_request_receives_search_tool(self) -> None:
+        class CapturingLanguageModel:
+            tools = []
+            required_tool_name = None
+
+            async def reply(self, _history, _prompt, tools, _handler, **kwargs):
+                self.tools = tools
+                self.required_tool_name = kwargs.get("required_tool_name")
+                return "Результаты поиска."
+
+        guild_id = "admin-web-search-test"
+        model = CapturingLanguageModel()
+        request = TurnRequest(
+            b"", guild_id, "channel", "admin", "Admin", user_is_admin=True
+        )
+        try:
+            with (
+                patch.object(app_module, "llm", model),
+                patch.object(app_module, "tts", _FakeTextToSpeech()),
+                patch.object(app_module, "user_memory", _FakeUserMemory()),
+            ):
+                await app_module.generate_turn(
+                    PreparedTurn(
+                        request,
+                        "поищи в сети свежие новости",
+                        "поищи в сети свежие новости",
+                        True,
+                    )
+                )
+
+            tool_names = {tool["function"]["name"] for tool in model.tools}
+            self.assertIn("search_web", tool_names)
+            self.assertEqual(model.required_tool_name, "search_web")
+        finally:
+            app_module.followups.stop_guild(guild_id)
+            app_module.store.reset(guild_id)
+            await asyncio.sleep(0)
+
+    async def test_non_whitelisted_web_search_skips_language_model(self) -> None:
+        class ForbiddenLanguageModel:
+            async def reply(self, *_args, **_kwargs):
+                raise AssertionError("LM Studio must not receive a denied web search")
+
+        guild_id = "denied-web-search-test"
+        request = TurnRequest(b"", guild_id, "channel", "user", "User")
+        try:
+            with (
+                patch.object(app_module, "llm", ForbiddenLanguageModel()),
+                patch.object(app_module, "tts", _FakeTextToSpeech()),
+                patch.object(app_module, "user_memory", _FakeUserMemory()),
+            ):
+                reply = await app_module.generate_turn(
+                    PreparedTurn(
+                        request,
+                        "найди в интернете новости",
+                        "найди в интернете новости",
+                        True,
+                    )
+                )
+
+            self.assertIsNotNone(reply)
+        finally:
+            app_module.followups.stop_guild(guild_id)
+            app_module.store.reset(guild_id)
+            await asyncio.sleep(0)
+
+    async def test_web_search_tool_enforces_persistent_whitelist(self) -> None:
+        class FakePublicInformation:
+            async def execute(self, tool_name, arguments):
+                self.call = (tool_name, arguments)
+                return '{"found":true}'
+
+        with tempfile.TemporaryDirectory() as directory:
+            memory = UserMemoryStore(str(Path(directory) / "memory.sqlite3"))
+            memory.prepare()
+            public_information = FakePublicInformation()
+            request = TurnRequest(b"", "guild", "channel", "user", "User")
+            with (
+                patch.object(app_module, "user_memory", memory),
+                patch.object(app_module, "public_information", public_information),
+            ):
+                with self.assertRaises(PermissionError):
+                    await app_module.execute_assistant_tool(
+                        request,
+                        "поищи в сети",
+                        "search_web",
+                        {"query": "тест"},
+                    )
+                memory.grant_web_search_access("guild", "user", "User")
+                result = await app_module.execute_assistant_tool(
+                    request,
+                    "поищи в сети",
+                    "search_web",
+                    {"query": "тест"},
+                )
+
+            self.assertEqual(result, '{"found":true}')
+            self.assertEqual(public_information.call, ("search_web", {"query": "тест"}))
+
     def test_end_conversation_tool_lists_every_configured_stop_phrase(self) -> None:
         serialized_tool = json.dumps(
             app_module.END_CONVERSATION_TOOL, ensure_ascii=False
@@ -408,6 +510,35 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(listed["effects"][0]["id"], "robotic")
         self.assertEqual(selected["id"], "silero:xenia")
         self.assertEqual(selected_effect["id"], "robotic")
+
+    async def test_web_search_access_endpoints_require_admin_and_persist(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            memory = UserMemoryStore(str(Path(directory) / "memory.sqlite3"))
+            memory.prepare()
+            with patch.object(app_module, "user_memory", memory):
+                with self.assertRaises(app_module.HTTPException) as denied:
+                    await app_module.grant_web_search_access(
+                        "guild",
+                        "user",
+                        app_module.WebSearchAccessGrant(displayName="User"),
+                        x_requester_is_admin=False,
+                    )
+                await app_module.grant_web_search_access(
+                    "guild",
+                    "user",
+                    app_module.WebSearchAccessGrant(displayName="User"),
+                    x_requester_is_admin=True,
+                )
+                listed = await app_module.list_web_search_access(
+                    "guild", x_requester_is_admin=True
+                )
+                await app_module.revoke_web_search_access(
+                    "guild", "user", x_requester_is_admin=True
+                )
+
+            self.assertEqual(denied.exception.status_code, 403)
+            self.assertEqual(listed["users"], [{"userId": "user", "displayName": "User"}])
+            self.assertFalse(memory.has_web_search_access("guild", "user"))
 
     async def test_turn_endpoint_splits_pcm_and_image(self) -> None:
         captured: list[TurnRequest] = []

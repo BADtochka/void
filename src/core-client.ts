@@ -5,6 +5,7 @@ type TurnMetadata = {
   channelId: string;
   userId: string;
   displayName: string;
+  userIsAdmin: boolean;
   audioAgeMs: number;
   earlyHotwordDetected: boolean;
   image?: ImagePrompt;
@@ -20,6 +21,7 @@ export type HotwordResult = { detected: boolean; transcript: string; busy?: bool
 export type UserDirectoryEntry = { userId: string; displayName: string };
 export type TtsVoice = { id: string; label: string; engine: string };
 export type TtsEffect = { id: string; label: string };
+export type WebSearchAccessUser = { userId: string; displayName: string | null };
 
 export async function detectHotword(
   pcm: Buffer,
@@ -102,6 +104,7 @@ export async function processTurn(
     "x-channel-id": metadata.channelId,
     "x-user-id": metadata.userId,
     "x-display-name": encodeURIComponent(metadata.displayName),
+    "x-user-is-admin": String(metadata.userIsAdmin),
     "x-audio-age-ms": String(Math.round(metadata.audioAgeMs)),
     "x-early-hotword-detected": String(metadata.earlyHotwordDetected),
   };
@@ -194,4 +197,55 @@ export async function setTtsEffect(guildId: string, effectId: string): Promise<T
     throw new Error(`voice-core TTS effect returned ${response.status}: ${await response.text()}`);
   }
   return (await response.json()) as TtsEffect;
+}
+
+export async function listWebSearchAccess(guildId: string): Promise<WebSearchAccessUser[]> {
+  const response = await fetch(
+    `${config.voiceCoreUrl}/v1/guilds/${encodeURIComponent(guildId)}/web-search-access`,
+    {
+      headers: { "x-requester-is-admin": "true" },
+      signal: AbortSignal.timeout(5_000),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`voice-core web access list returned ${response.status}: ${await response.text()}`);
+  }
+  const result = (await response.json()) as { users: WebSearchAccessUser[] };
+  return result.users;
+}
+
+export async function grantWebSearchAccess(
+  guildId: string,
+  userId: string,
+  displayName: string,
+): Promise<void> {
+  const response = await fetch(
+    `${config.voiceCoreUrl}/v1/guilds/${encodeURIComponent(guildId)}/web-search-access/${encodeURIComponent(userId)}`,
+    {
+      method: "PUT",
+      headers: {
+        "content-type": "application/json",
+        "x-requester-is-admin": "true",
+      },
+      body: JSON.stringify({ displayName }),
+      signal: AbortSignal.timeout(5_000),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`voice-core web access grant returned ${response.status}: ${await response.text()}`);
+  }
+}
+
+export async function revokeWebSearchAccess(guildId: string, userId: string): Promise<void> {
+  const response = await fetch(
+    `${config.voiceCoreUrl}/v1/guilds/${encodeURIComponent(guildId)}/web-search-access/${encodeURIComponent(userId)}`,
+    {
+      method: "DELETE",
+      headers: { "x-requester-is-admin": "true" },
+      signal: AbortSignal.timeout(5_000),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`voice-core web access revoke returned ${response.status}: ${await response.text()}`);
+  }
 }

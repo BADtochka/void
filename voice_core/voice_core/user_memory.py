@@ -107,6 +107,12 @@ class UserNameMatch:
     confidence: float
 
 
+@dataclass(frozen=True)
+class WebSearchAccessEntry:
+    user_id: str
+    display_name: str | None
+
+
 class UserMemoryStore:
     def __init__(self, database_path: str) -> None:
         self._path = Path(database_path)
@@ -162,6 +168,43 @@ class UserMemoryStore:
                 (guild_id, user_id, key),
             )
         return cursor.rowcount > 0
+
+    def grant_web_search_access(
+        self, guild_id: str, user_id: str, display_name: str
+    ) -> None:
+        self.set(guild_id, user_id, "discord_display_name", display_name)
+        self.set(guild_id, user_id, "web_search_access", "true")
+
+    def revoke_web_search_access(self, guild_id: str, user_id: str) -> bool:
+        return self.delete(guild_id, user_id, "web_search_access")
+
+    def has_web_search_access(self, guild_id: str, user_id: str) -> bool:
+        return self.get(guild_id, user_id, "web_search_access") == "true"
+
+    def list_web_search_access(self, guild_id: str) -> list[WebSearchAccessEntry]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT access.user_id, display.memory_value
+                FROM user_memories AS access
+                LEFT JOIN user_memories AS display
+                  ON display.guild_id = access.guild_id
+                 AND display.user_id = access.user_id
+                 AND display.memory_key = 'discord_display_name'
+                WHERE access.guild_id = ?
+                  AND access.memory_key = 'web_search_access'
+                  AND access.memory_value = 'true'
+                ORDER BY COALESCE(display.memory_value, access.user_id) COLLATE NOCASE
+                """,
+                (guild_id,),
+            ).fetchall()
+        return [
+            WebSearchAccessEntry(
+                user_id=str(user_id),
+                display_name=str(display_name) if display_name else None,
+            )
+            for user_id, display_name in rows
+        ]
 
     def find_best_name(
         self, guild_id: str, query: str, *, exclude_user_id: str | None = None

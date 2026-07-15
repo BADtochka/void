@@ -1,5 +1,6 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
 
+beautifulsoup4>=4.13,<5
 fastapi>=0.116,<1
 faster-whisper>=1.2,<2
 httpx>=0.28,<1

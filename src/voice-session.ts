@@ -9,7 +9,7 @@ import {
   createAudioPlayer,
   createAudioResource,
 } from "@discordjs/voice";
-import type { Client, GuildMember } from "discord.js";
+import { PermissionFlagsBits, type Client, type GuildMember } from "discord.js";
 import { voiceLevelPassesThresholds } from "./audio-level.js";
 import { config } from "./config.js";
 import { createVoiceCue, type VoiceCueType } from "./audio-cues.js";
@@ -232,6 +232,7 @@ export class VoiceSession {
     const guild = this.client.guilds.cache.get(this.connection.joinConfig.guildId);
     const member = guild?.members.cache.get(userId) as GuildMember | undefined;
     const displayName = member?.displayName ?? "Участник Discord";
+    const userIsAdmin = member?.permissions.has(PermissionFlagsBits.Administrator) ?? false;
     const followupAtCaptureStart =
       this.userHasActiveTurn(userId);
     const replyPlayingAtCaptureStart = this.currentPlaybackKind === "reply";
@@ -559,6 +560,7 @@ export class VoiceSession {
             channelId: this.channelId,
             userId,
             displayName,
+            userIsAdmin,
             audioAgeMs: performance.now() - captureStartedAt,
             earlyHotwordDetected,
             image: imageAtCaptureStart,

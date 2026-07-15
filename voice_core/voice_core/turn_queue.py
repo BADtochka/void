@@ -18,6 +18,7 @@ class TurnRequest:
     display_name: str
     started_at: float = 0.0
     early_hotword_detected: bool = False
+    user_is_admin: bool = False
     image_content_type: str = ""
     image_data: bytes = b""
 

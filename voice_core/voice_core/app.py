@@ -19,8 +19,10 @@ from .dialogue import ConversationStore, prepare_for_speech  # noqa: E402
 from .event_bus import FollowupTracker, VoiceEvent, VoiceEventBus  # noqa: E402
 from .public_info import (  # noqa: E402
     PUBLIC_INFO_TOOLS,
+    WEB_SEARCH_TOOL,
     PublicInformationService,
     requested_public_tool,
+    requested_web_search,
 )
 from .services import HotwordDetector, LanguageModel, SpeechToText, TextToSpeech, ToolResult  # noqa: E402
 from .turn_queue import (  # noqa: E402
@@ -72,6 +74,10 @@ class TtsSelection(BaseModel):
 
 class TtsEffectSelection(BaseModel):
     effectId: str = Field(min_length=1, max_length=32)
+
+
+class WebSearchAccessGrant(BaseModel):
+    displayName: str = Field(min_length=1, max_length=100)
 
 
 END_CONVERSATION_TOOL: dict[str, object] = {
@@ -372,6 +378,13 @@ async def execute_assistant_tool(
             },
             ensure_ascii=False,
         )
+    if tool_name == "search_web":
+        if not (
+            request.user_is_admin
+            or user_memory.has_web_search_access(request.guild_id, request.user_id)
+        ):
+            raise PermissionError("web search is not allowed for the current user")
+        return await public_information.execute(tool_name, arguments)
     if tool_name in {"get_current_weather", "lookup_topic", "get_random_joke"}:
         return await public_information.execute(tool_name, arguments)
     result = await execute_user_memory_tool(
@@ -507,24 +520,48 @@ async def generate_turn(turn: PreparedTurn) -> bytes | None:
         f"[Реплика текущего говорящего]\n{accepted}"
     )
     chat_deliveries: list[str | None] = []
-    answer = await llm.reply(
-        store.history(request.guild_id),
-        prompt,
-        ASSISTANT_TOOLS,
-        lambda name, arguments: execute_assistant_tool(
-            request, accepted, name, arguments, chat_deliveries
-        ),
-        required_tool_name=(
-            "lookup_user_name"
-            if requested_name_lookup(accepted)
-            else "send_message_to_chat"
-            if requested_chat_delivery(accepted)
-            else requested_user_memory_tool(accepted)
-            or requested_public_tool(accepted)
-        ),
-        image_data=request.image_data or None,
-        image_content_type=request.image_content_type or None,
+    web_search_allowed = request.user_is_admin or user_memory.has_web_search_access(
+        request.guild_id, request.user_id
     )
+    prompt = (
+        f"{prompt}\n[Доступ к поиску в сети: "
+        f"{'разрешён' if web_search_allowed else 'запрещён'}]"
+    )
+    requested_public = requested_public_tool(accepted)
+    if requested_web_search(accepted) and not web_search_allowed:
+        answer = (
+            "Поиск в сети доступен только администраторам сервера и пользователям "
+            "из списка доступа."
+        )
+        logger.info(
+            "Web search denied guild_id=%s user_id=%s",
+            request.guild_id,
+            request.user_id,
+        )
+    else:
+        assistant_tools = (
+            [*ASSISTANT_TOOLS, WEB_SEARCH_TOOL]
+            if web_search_allowed
+            else ASSISTANT_TOOLS
+        )
+        answer = await llm.reply(
+            store.history(request.guild_id),
+            prompt,
+            assistant_tools,
+            lambda name, arguments: execute_assistant_tool(
+                request, accepted, name, arguments, chat_deliveries
+            ),
+            required_tool_name=(
+                "lookup_user_name"
+                if requested_name_lookup(accepted)
+                else "send_message_to_chat"
+                if requested_chat_delivery(accepted)
+                else requested_user_memory_tool(accepted)
+                or requested_public
+            ),
+            image_data=request.image_data or None,
+            image_content_type=request.image_content_type or None,
+        )
     spoken_answer = prepare_for_speech(answer)
     if not spoken_answer:
         return None
@@ -697,6 +734,53 @@ async def sync_user_directory(
     return Response(status_code=204)
 
 
+@app.get("/v1/guilds/{guild_id}/web-search-access")
+async def list_web_search_access(
+    guild_id: str,
+    x_requester_is_admin: bool = Header(default=False),
+) -> dict[str, object]:
+    if not x_requester_is_admin:
+        raise HTTPException(status_code=403, detail="Administrator permission required")
+    return {
+        "users": [
+            {"userId": entry.user_id, "displayName": entry.display_name}
+            for entry in user_memory.list_web_search_access(guild_id)
+        ]
+    }
+
+
+@app.put("/v1/guilds/{guild_id}/web-search-access/{user_id}", status_code=204)
+async def grant_web_search_access(
+    guild_id: str,
+    user_id: str,
+    grant: WebSearchAccessGrant,
+    x_requester_is_admin: bool = Header(default=False),
+) -> Response:
+    if not x_requester_is_admin:
+        raise HTTPException(status_code=403, detail="Administrator permission required")
+    user_memory.grant_web_search_access(guild_id, user_id, grant.displayName)
+    logger.info("Web search access granted guild_id=%s user_id=%s", guild_id, user_id)
+    return Response(status_code=204)
+
+
+@app.delete("/v1/guilds/{guild_id}/web-search-access/{user_id}", status_code=204)
+async def revoke_web_search_access(
+    guild_id: str,
+    user_id: str,
+    x_requester_is_admin: bool = Header(default=False),
+) -> Response:
+    if not x_requester_is_admin:
+        raise HTTPException(status_code=403, detail="Administrator permission required")
+    deleted = user_memory.revoke_web_search_access(guild_id, user_id)
+    logger.info(
+        "Web search access revoked guild_id=%s user_id=%s deleted=%s",
+        guild_id,
+        user_id,
+        deleted,
+    )
+    return Response(status_code=204)
+
+
 @app.get("/v1/guilds/{guild_id}/tts")
 async def get_tts_selection(guild_id: str) -> dict[str, object]:
     return {
@@ -785,6 +869,7 @@ async def enqueue_turn(
     x_display_name: str = Header(),
     x_audio_age_ms: float = Header(default=0),
     x_early_hotword_detected: bool = Header(default=False),
+    x_user_is_admin: bool = Header(default=False),
     x_audio_byte_length: int | None = Header(default=None),
     x_image_content_type: str | None = Header(default=None),
 ) -> Response:
@@ -831,6 +916,7 @@ async def enqueue_turn(
             display_name=unquote(x_display_name),
             started_at=loop.time() - audio_age_seconds,
             early_hotword_detected=x_early_hotword_detected,
+            user_is_admin=x_user_is_admin,
             image_content_type=image_content_type,
             image_data=image_data,
         )
