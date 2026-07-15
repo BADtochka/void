@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import httpx
 import numpy as np
 
 from voice_core.config import Settings
@@ -379,6 +380,69 @@ class LanguageModelToolChoiceTests(unittest.IsolatedAsyncioTestCase):
             payloads[0]["tools"][0]["function"]["name"], "lookup_user_name"
         )
         self.assertNotIn("tool_choice", payloads[1])
+
+    async def test_tool_rejection_retries_without_tools(self) -> None:
+        model = LanguageModel(Settings())
+        payloads: list[dict[str, object]] = []
+
+        async def fake_completion(payload, _request_number):
+            payloads.append(dict(payload))
+            if "tools" in payload:
+                request = httpx.Request("POST", "http://127.0.0.1:1234/v1/chat/completions")
+                response = httpx.Response(400, request=request, text="tools unsupported")
+                raise httpx.HTTPStatusError(
+                    "Client error '400 Bad Request'",
+                    request=request,
+                    response=response,
+                )
+            return (
+                {
+                    "content": "Привет без инструментов.",
+                    "reasoning_content": "",
+                    "tool_calls": [],
+                },
+                "stop",
+            )
+
+        model._stream_completion = fake_completion
+        try:
+            answer = await model.reply(
+                [],
+                "привет",
+                USER_MEMORY_TOOLS,
+                lambda *_args: '{"ok":true}',
+                required_tool_name="lookup_user_name",
+            )
+        finally:
+            await model.close()
+
+        self.assertEqual(answer, "Привет без инструментов.")
+        self.assertEqual(len(payloads), 2)
+        self.assertIn("tools", payloads[0])
+        self.assertNotIn("tools", payloads[1])
+
+    async def test_http_error_returns_spoken_fallback(self) -> None:
+        model = LanguageModel(Settings())
+
+        async def fake_completion(_payload, _request_number):
+            request = httpx.Request("POST", "http://127.0.0.1:1234/v1/chat/completions")
+            response = httpx.Response(400, request=request, text="bad request")
+            raise httpx.HTTPStatusError(
+                "Client error '400 Bad Request'",
+                request=request,
+                response=response,
+            )
+
+        model._stream_completion = fake_completion
+        try:
+            answer = await model.reply([], "привет")
+        finally:
+            await model.close()
+
+        self.assertEqual(
+            answer,
+            "Сейчас не могу ответить. Попробуй ещё раз.",
+        )
 
 
 class SpeechToTextTests(unittest.TestCase):

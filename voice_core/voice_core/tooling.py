@@ -5,16 +5,8 @@ import re
 from typing import Any
 
 from .dialogue import normalize_phrase, normalize_stop_request
-from .public_info import (
-    PUBLIC_INFO_TOOLS,
-    WEB_SEARCH_TOOL,
-    requested_public_tool,
-)
-from .user_memory import (
-    USER_MEMORY_TOOLS,
-    requested_name_lookup,
-    requested_user_memory_tool,
-)
+from .public_info import PUBLIC_INFO_TOOLS, WEB_SEARCH_TOOL
+from .user_memory import USER_MEMORY_TOOLS
 
 DEFAULT_SYSTEM_PROMPT = (
     "Ты Омни — локальный голосовой собеседник в Discord. Отвечай по-русски, кратко и естественно. "
@@ -27,15 +19,11 @@ DEFAULT_SYSTEM_PROMPT = (
     "используй его для обращения, не ищи другое имя в базе. "
     "Местоимения «я/меня/мне» в реплике относятся только к current_identity. "
     "Никогда не произноси identity_key. "
-    "Нужные факты и действия выполняй через инструменты, не выдумывай свежие данные. "
-    "Никогда не пиши в тексте имена инструментов (end_conversation, lookup_user_name и т.п.) — "
-    "только вызывай их. Не давай инструкций интерфейса: «нажми», «напиши продолжить», «если нужно». "
-    "lookup_user_name вызывай только при явном вопросе про имя; не при 'как дела' и не для болтовни. "
-    "send_message_to_chat и end_conversation — только по явной просьбе пользователя. "
-    "На приветствие и болтовню отвечай обычным текстом, без инструментов. "
-    "Перед вызовом инструмента можешь коротко сказать нейтральную фразу "
-    "(«Секунду», «Сейчас посмотрю») — она озвучится сразу. "
-    "Чтобы закончить голосовой диалог, вызови end_conversation, не описывая это словами."
+    "Сам решай, когда нужен инструмент: вызывай tool call, не пиши имена инструментов в тексте. "
+    "На приветствие и обычную болтовню отвечай текстом без инструментов. "
+    "Перед вызовом можешь коротко сказать нейтральную фразу («Секунду», «Сейчас посмотрю») — "
+    "она озвучится сразу. "
+    "Чтобы закончить голосовой диалог, вызови end_conversation; прощание — только в farewell."
 )
 
 TOOL_STATUS_SPEECH: dict[str, str] = {
@@ -105,23 +93,6 @@ SEND_MESSAGE_TO_CHAT_TOOL: dict[str, object] = {
             "additionalProperties": False,
         },
     },
-}
-
-_CORE_TOOLS: list[dict[str, object]] = []
-
-_CHAT_TOOLS_BY_NAME = {
-    "send_message_to_chat": SEND_MESSAGE_TO_CHAT_TOOL,
-    "end_conversation": END_CONVERSATION_TOOL,
-}
-
-_MEMORY_TOOLS_BY_NAME = {
-    str((tool.get("function") or {}).get("name") or ""): tool
-    for tool in USER_MEMORY_TOOLS
-}
-
-_PUBLIC_TOOLS_BY_NAME = {
-    str((tool.get("function") or {}).get("name") or ""): tool
-    for tool in (*PUBLIC_INFO_TOOLS, WEB_SEARCH_TOOL)
 }
 
 _END_CONVERSATION_MARKERS = (
@@ -209,52 +180,23 @@ def select_assistant_tools(
     *,
     web_search_allowed: bool,
 ) -> list[dict[str, object]]:
-    """Attach tools only when the utterance matches a known intent."""
-    tools: list[dict[str, object]] = []
-    selected_names: set[str] = set()
-
-    def add_tool(name: str, catalog: dict[str, dict[str, object]]) -> None:
-        if name in selected_names:
-            return
-        if name == "search_web" and not web_search_allowed:
-            return
-        tool = catalog.get(name)
-        if tool is None:
-            return
-        tools.append(tool)
-        selected_names.add(name)
-
-    if requested_end_conversation(text):
-        add_tool("end_conversation", _CHAT_TOOLS_BY_NAME)
-    if requested_chat_delivery(text):
-        add_tool("send_message_to_chat", _CHAT_TOOLS_BY_NAME)
-    if requested_name_lookup(text):
-        add_tool("lookup_user_name", _MEMORY_TOOLS_BY_NAME)
-    memory_tool = requested_user_memory_tool(text)
-    if memory_tool:
-        add_tool(memory_tool, _MEMORY_TOOLS_BY_NAME)
-
-    public = requested_public_tool(text)
-    if public:
-        add_tool(public, _PUBLIC_TOOLS_BY_NAME)
-
+    """Return the full tool catalog; the model chooses what to call."""
+    _ = text
+    tools: list[dict[str, object]] = [
+        *USER_MEMORY_TOOLS,
+        *PUBLIC_INFO_TOOLS,
+        SEND_MESSAGE_TO_CHAT_TOOL,
+        END_CONVERSATION_TOOL,
+    ]
+    if web_search_allowed:
+        tools.append(WEB_SEARCH_TOOL)
     return tools
 
 
 def required_tool_for_turn(text: str, *, web_search_allowed: bool) -> str | None:
-    if requested_end_conversation(text):
-        return "end_conversation"
-    if requested_name_lookup(text):
-        return "lookup_user_name"
-    if requested_chat_delivery(text):
-        return "send_message_to_chat"
-    memory_tool = requested_user_memory_tool(text)
-    if memory_tool:
-        return memory_tool
-    public = requested_public_tool(text)
-    if public == "search_web" and not web_search_allowed:
-        return None
-    return public
+    """Never force a tool — the model decides. Kept for API compatibility."""
+    _ = (text, web_search_allowed)
+    return None
 
 
 def build_turn_prompt(

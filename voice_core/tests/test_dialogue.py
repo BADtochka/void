@@ -257,6 +257,19 @@ class ConversationStoreTests(unittest.TestCase):
         self.assertIsNone(store.accept("guild", "Омни, стоп.", now=15))
         self.assertIsNone(store.accept("guild", "это не уйдет в модель", now=16))
 
+    def test_glued_wake_and_stop_is_recognized_locally(self) -> None:
+        store = ConversationStore(
+            "омни",
+            followup_seconds=30,
+            max_turns=2,
+            wake_word_aliases=("помни",),
+            stop_phrases=("стоп", "хватит"),
+        )
+
+        self.assertTrue(store.stop_if_requested("guild", "Омнистоп"))
+        self.assertTrue(store.stop_if_requested("guild", "Помнихватит"))
+        self.assertFalse(store.stop_if_requested("guild", "Омнислушивание"))
+
     def test_stop_aliases_and_bare_followup_stop_are_recognized(self) -> None:
         store = ConversationStore(
             "омни",

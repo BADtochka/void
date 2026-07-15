@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 _SILERO_SENTENCE_PATTERN = re.compile(r"\S(?:.*?\S)?(?:[.!?]+(?=\s|$)|$)")
 _MAX_TOOL_ROUNDS = 3
 _TOOL_LIMIT_FALLBACK = "Сейчас не получается проверить это. Скажи ещё раз чуть проще."
+_LM_REQUEST_FALLBACK = "Сейчас не могу ответить. Попробуй ещё раз."
 
 
 def _silero_sentences(text: str) -> list[str]:
@@ -341,7 +342,19 @@ class LanguageModel:
                 f"{self._settings.lmstudio_base_url}/chat/completions",
                 json={**payload, "stream": True},
             ) as response:
-                response.raise_for_status()
+                if response.status_code >= 400:
+                    body = (await response.aread()).decode("utf-8", errors="replace")
+                    logger.error(
+                        "LM Studio request failed status=%s request=%s body=%s",
+                        response.status_code,
+                        request_number,
+                        body[:1_000],
+                    )
+                    raise httpx.HTTPStatusError(
+                        f"Client error '{response.status_code}' for url '{response.url}'",
+                        request=response.request,
+                        response=response,
+                    )
                 async for line in response.aiter_lines():
                     if not line.startswith("data:"):
                         continue
@@ -415,6 +428,7 @@ class LanguageModel:
         empty_retries = 0
         tool_rounds = 0
         request_number = 0
+        tools_disabled_after_error = False
         while True:
             request_number += 1
             payload: dict[str, Any] = {
@@ -446,7 +460,34 @@ class LanguageModel:
             if self._settings.lmstudio_reasoning_effort:
                 payload["reasoning_effort"] = self._settings.lmstudio_reasoning_effort
 
-            message, finish_reason = await self._stream_completion(payload, request_number)
+            try:
+                message, finish_reason = await self._stream_completion(
+                    payload, request_number
+                )
+            except httpx.HTTPStatusError as error:
+                status = error.response.status_code if error.response is not None else None
+                if (
+                    status == 400
+                    and tools
+                    and not tools_disabled_after_error
+                    and "tools" in payload
+                ):
+                    logger.warning(
+                        "LM Studio rejected tools payload; retrying without tools"
+                    )
+                    tools = None
+                    required_tool_name = None
+                    tools_disabled_after_error = True
+                    continue
+                logger.exception(
+                    "LM Studio chat completions failed status=%s",
+                    status,
+                )
+                return _LM_REQUEST_FALLBACK
+            except httpx.HTTPError:
+                logger.exception("LM Studio chat completions request failed")
+                return _LM_REQUEST_FALLBACK
+
             content = _message_content(message)
             tool_calls = message.get("tool_calls") or []
             logger.info(

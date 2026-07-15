@@ -90,6 +90,9 @@ class ConversationStore:
                 continue
             for wake in normalized_wakes:
                 stop_phrases_normalized.add(f"{wake} {stop_phrase}")
+                # ASR often glues wake and stop without a separator: «Омнистоп».
+                if " " not in wake and " " not in stop_phrase:
+                    stop_phrases_normalized.add(f"{wake}{stop_phrase}")
         self._stop_phrases = frozenset(stop_phrases_normalized)
         self._followup_min_chars = followup_min_chars
         self._followup_ignore_phrases = frozenset(

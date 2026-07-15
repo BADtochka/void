@@ -249,7 +249,7 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
                     )
 
                 self.assertEqual(
-                    model.required_tool_name, "remember_preferred_name"
+                    model.required_tool_name, None
                 )
                 self.assertEqual(memory.get(guild_id, "user", "preferred_name"), "рыжий")
             finally:
@@ -289,57 +289,7 @@ class VoiceTurnTests(unittest.IsolatedAsyncioTestCase):
 
             tool_names = {tool["function"]["name"] for tool in model.tools}
             self.assertIn("search_web", tool_names)
-            self.assertEqual(model.required_tool_name, "search_web")
-        finally:
-            app_module.followups.stop_guild(guild_id)
-            app_module.store.reset(guild_id)
-            await asyncio.sleep(0)
-
-    async def test_name_lookup_skips_language_model_for_current_user(self) -> None:
-        class ForbiddenLanguageModel:
-            async def reply(self, *_args, **_kwargs):
-                raise AssertionError("LM Studio must not receive a current-user name lookup")
-
-        class NamedUserMemory:
-            def set(self, *_args):
-                return None
-
-            def get(self, _guild_id, _user_id, key):
-                if key == "preferred_name":
-                    return "Пупсик"
-                return None
-
-            def has_web_search_access(self, *_args):
-                return False
-
-        class CapturingTextToSpeech:
-            def __init__(self):
-                self.text = None
-
-            async def synthesize(self, text, _guild_id):
-                self.text = text
-                return np.zeros(100, dtype=np.float32), 16_000
-
-        guild_id = "name-lookup-direct-test"
-        request = TurnRequest(b"", guild_id, "channel", "user", ".formallybad")
-        tts = CapturingTextToSpeech()
-        try:
-            with (
-                patch.object(app_module, "llm", ForbiddenLanguageModel()),
-                patch.object(app_module, "tts", tts),
-                patch.object(app_module, "user_memory", NamedUserMemory()),
-            ):
-                result = await app_module.generate_turn(
-                    PreparedTurn(
-                        request,
-                        "как меня зовут",
-                        "как меня зовут",
-                        False,
-                    )
-                )
-
-            self.assertIsNotNone(result)
-            self.assertEqual(tts.text, "Тебя зовут Пупсик.")
+            self.assertIsNone(model.required_tool_name)
         finally:
             app_module.followups.stop_guild(guild_id)
             app_module.store.reset(guild_id)

@@ -14,7 +14,7 @@ class ToolingTests(unittest.TestCase):
     def test_system_prompt_stays_persona_focused(self) -> None:
         self.assertIn("Омни", DEFAULT_SYSTEM_PROMPT)
         self.assertIn("current_identity", DEFAULT_SYSTEM_PROMPT)
-        self.assertIn("не пиши в тексте имена инструментов", DEFAULT_SYSTEM_PROMPT.casefold())
+        self.assertIn("сам решай", DEFAULT_SYSTEM_PROMPT.casefold())
         self.assertNotIn("get_current_weather", DEFAULT_SYSTEM_PROMPT)
         self.assertLess(len(DEFAULT_SYSTEM_PROMPT), 1_600)
 
@@ -24,13 +24,18 @@ class ToolingTests(unittest.TestCase):
         self.assertTrue(requested_end_conversation("хватит"))
         self.assertFalse(requested_end_conversation("какая погода в Москве"))
 
-    def test_required_tool_forces_end_conversation(self) -> None:
-        self.assertEqual(
-            required_tool_for_turn("давай завершим", web_search_allowed=False),
-            "end_conversation",
+    def test_required_tool_is_never_forced(self) -> None:
+        self.assertIsNone(
+            required_tool_for_turn("давай завершим", web_search_allowed=False)
+        )
+        self.assertIsNone(
+            required_tool_for_turn("как меня зовут", web_search_allowed=False)
+        )
+        self.assertIsNone(
+            required_tool_for_turn("какая погода", web_search_allowed=True)
         )
 
-    def test_select_tools_narrows_on_weather_intent(self) -> None:
+    def test_select_tools_returns_full_catalog(self) -> None:
         tools = select_assistant_tools(
             "какая сейчас погода в Казани",
             web_search_allowed=True,
@@ -38,44 +43,30 @@ class ToolingTests(unittest.TestCase):
         names = {
             str((tool.get("function") or {}).get("name") or "") for tool in tools
         }
-        self.assertIn("get_current_weather", names)
-        self.assertNotIn("end_conversation", names)
-        self.assertNotIn("send_message_to_chat", names)
-        self.assertNotIn("search_web", names)
-        self.assertNotIn("get_random_joke", names)
-        self.assertNotIn("lookup_user_name", names)
+        self.assertEqual(
+            names,
+            {
+                "remember_preferred_name",
+                "forget_preferred_name",
+                "lookup_user_name",
+                "get_current_weather",
+                "lookup_topic",
+                "get_random_joke",
+                "search_web",
+                "send_message_to_chat",
+                "end_conversation",
+            },
+        )
 
-    def test_select_tools_omits_name_lookup_for_smalltalk(self) -> None:
+    def test_select_tools_omits_search_web_when_denied(self) -> None:
         tools = select_assistant_tools("Как твои дела?", web_search_allowed=False)
         names = {
             str((tool.get("function") or {}).get("name") or "") for tool in tools
         }
-        self.assertEqual(names, set())
-        self.assertNotIn("lookup_user_name", names)
-        self.assertNotIn("send_message_to_chat", names)
-        self.assertNotIn("end_conversation", names)
-
-    def test_select_tools_includes_chat_and_stop_only_when_requested(self) -> None:
-        chat = select_assistant_tools(
-            "Омни, отправь ответ в чат",
-            web_search_allowed=False,
-        )
-        stop = select_assistant_tools("давай на этом закончим", web_search_allowed=False)
-        chat_names = {
-            str((tool.get("function") or {}).get("name") or "") for tool in chat
-        }
-        stop_names = {
-            str((tool.get("function") or {}).get("name") or "") for tool in stop
-        }
-        self.assertEqual(chat_names, {"send_message_to_chat"})
-        self.assertEqual(stop_names, {"end_conversation"})
-
-    def test_select_tools_includes_name_lookup_only_for_name_questions(self) -> None:
-        tools = select_assistant_tools("как меня зовут", web_search_allowed=False)
-        names = {
-            str((tool.get("function") or {}).get("name") or "") for tool in tools
-        }
+        self.assertNotIn("search_web", names)
+        self.assertIn("end_conversation", names)
         self.assertIn("lookup_user_name", names)
+        self.assertIn("get_current_weather", names)
 
     def test_tool_status_speech_is_neutral(self) -> None:
         self.assertEqual(tool_status_speech("search_web"), "Ищу в сети.")
