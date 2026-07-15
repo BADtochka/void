@@ -212,6 +212,21 @@ def _plain_excerpt(value: object) -> str:
     return " ".join(text.split())
 
 
+def _missing_topic_joke(
+    topic: str, search_query: str, reason: object
+) -> dict[str, Any]:
+    return {
+        "found": False,
+        "topic": topic,
+        "search_query": search_query,
+        "reason": str(reason or "Подходящая шутка не найдена."),
+        "response_instruction": (
+            "Кратко скажи, что в источнике не нашлось анекдота по указанной теме. "
+            "Не подменяй его несвязанной шуткой."
+        ),
+    }
+
+
 def _duckduckgo_result_url(value: str) -> str:
     url = html.unescape(value).strip()
     if url.startswith("//"):
@@ -439,20 +454,28 @@ class PublicInformationService:
             f"https://v2.jokeapi.dev/joke/{api_category}",
             params=params,
         )
+        if response.status_code == 400 and topic:
+            try:
+                error_payload = response.json()
+            except ValueError:
+                pass
+            else:
+                if error_payload.get("error") and error_payload.get("code") == 106:
+                    logger.info(
+                        "JokeAPI has no topic match topic=%r search_query=%r",
+                        topic,
+                        search_query,
+                    )
+                    return _missing_topic_joke(
+                        topic, search_query, error_payload.get("message")
+                    )
         response.raise_for_status()
         payload = response.json()
         if payload.get("error"):
             if topic:
-                return {
-                    "found": False,
-                    "topic": topic,
-                    "search_query": search_query,
-                    "reason": str(payload.get("message") or "Подходящая шутка не найдена."),
-                    "response_instruction": (
-                        "Кратко скажи, что в источнике не нашлось анекдота по указанной теме. "
-                        "Не подменяй его несвязанной шуткой."
-                    ),
-                }
+                return _missing_topic_joke(
+                    topic, search_query, payload.get("message")
+                )
             raise RuntimeError(str(payload.get("message") or "JokeAPI returned an error"))
         text = (
             str(payload.get("joke") or "")

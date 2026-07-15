@@ -199,8 +199,15 @@ class PublicInformationServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_missing_topic_match_does_not_return_unrelated_joke(self) -> None:
         def handler(_request: httpx.Request) -> httpx.Response:
             return httpx.Response(
-                200,
-                json={"error": True, "message": "No matching joke found"},
+                400,
+                json={
+                    "error": True,
+                    "code": 106,
+                    "message": "No matching joke found",
+                    "causedBy": [
+                        "No jokes were found that match your provided filter(s)."
+                    ],
+                },
             )
 
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
@@ -215,6 +222,25 @@ class PublicInformationServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["found"])
         self.assertEqual(result["topic"], "космонавты")
         self.assertNotIn("joke", result)
+
+    async def test_other_joke_api_bad_requests_remain_errors(self) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                400,
+                json={
+                    "error": True,
+                    "code": 107,
+                    "message": "Invalid filter",
+                },
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            service = PublicInformationService(client)
+            with self.assertRaises(httpx.HTTPStatusError):
+                await service.execute(
+                    "get_random_joke",
+                    {"topic": "нейросеть", "search_query": "neural network"},
+                )
 
     async def test_web_search_parses_results_and_unwraps_redirects(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
