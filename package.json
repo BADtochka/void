@@ -1,0 +1,25 @@
+{
+  "name": "local-discord-voice-assistant",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "./scripts/dev.sh",
+    "dev:bot": "bun --watch src/index.ts",
+    "dev:backend": "./scripts/start-backend.sh --reload --reload-dir voice_core/voice_core",
+    "start": "bun src/index.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@discordjs/opus": "0.10.0",
+    "@discordjs/voice": "0.19.2",
+    "@snazzah/davey": "0.1.12",
+    "discord.js": "14.26.5",
+    "prism-media": "1.3.5"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.14",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}

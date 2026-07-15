@@ -1,0 +1,40 @@
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+
+# Python environments and caches
+.venv*/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Bun / Node
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Downloaded speech models
+models/*.onnx
+models/*.onnx.json
+models/*.pt
+models/*.pt.part
+
+# Runtime data
+data/*.sqlite3
+data/*.sqlite3-*
+*.log
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
